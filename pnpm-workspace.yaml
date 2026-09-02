@@ -1,0 +1,4 @@
+packages:
+  - adapter
+allowBuilds:
+  esbuild: true

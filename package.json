@@ -1,0 +1,9 @@
+{
+  "name": "dsh-capsule",
+  "private": true,
+  "description": "Isolated Plugin Runtime with Revocable Capability Leases for DeepSeek Harness",
+  "scripts": {
+    "build": "pnpm -r --if-present build",
+    "test": "pnpm -r --if-present test"
+  }
+}
