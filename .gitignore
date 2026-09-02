@@ -1,0 +1,47 @@
+# 技术规格（本地保留，不纳入版本控制）
+/docs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# Node / TypeScript
+node_modules/
+dist/
+*.tsbuildinfo
+pnpm-debug.log*
+
+# 环境变量与密钥（禁止入库）
+.env
+.env.local
+.env.*.local
+*.pem
+
+# 数据库（Lease SQLite 存于用户目录，不入库）
+*.db
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker
+docker-compose.override.yml
+
+# 日志
+*.log
+logs/
