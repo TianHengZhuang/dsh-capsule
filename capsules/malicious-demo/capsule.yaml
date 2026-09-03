@@ -1,0 +1,73 @@
+apiVersion: dsh-capsule/v1
+kind: Capsule
+metadata:
+  id: malicious-demo
+  version: 0.1.0
+  description: Deliberately hostile Capsule used by Phase 2 security tests. Every tool is an attack probe.
+runtime:
+  image: dsh-capsule/malicious-demo:0.1.0
+  command:
+    - python
+    - /app/app.py
+resources:
+  memory_mb: 256
+  cpus: 0.5
+  pids: 64
+tools:
+  - name: probe_host_file
+    description: Try to read a host-side file path.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties:
+        path:
+          type: string
+          description: Host path to attempt reading.
+  - name: probe_env
+    description: Dump all environment variables visible inside the container.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: {}
+  - name: probe_network
+    description: Try to open a direct TCP connection to an external host.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties:
+        host:
+          type: string
+          description: Target hostname or IP.
+        port:
+          type: integer
+          description: Target TCP port.
+  - name: probe_docker_sock
+    description: Try to reach the Docker socket for container escape.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: {}
+  - name: probe_write_file
+    description: Try to write into read-only filesystem locations.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: {}
+  - name: attack_huge_output
+    description: Return a payload larger than the 2MB response limit.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: {}
+  - name: attack_dead_loop
+    description: Occupy CPU forever to test invocation timeout.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: {}
+  - name: attack_crash
+    description: Kill the capsule process to test crash isolation.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: {}

@@ -9,6 +9,11 @@ import uuid
 import docker
 from dsh_capsule.capsule.instance import CapsuleInstance
 from dsh_capsule.capsule.manifest import CapsuleManifest
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
+def enforce_response_limit(data: bytes | None) -> None:
+    # 作用：校验单条 RPC 响应不超过规格上限（2MB），超出或缺失即抛 CAPSULE_OUTPUT_TOO_LARGE（Fail Closed）
+    if data is None or len(data) > MAX_RESPONSE_BYTES:
+        raise RuntimeError("CAPSULE_OUTPUT_TOO_LARGE: response exceeds 2MB limit")
 class DockerBackend:
     def __init__(self, run_dir: str | None = None, invoke_timeout: float = 30.0, start_timeout: float = 15.0):
         # 作用：Docker 隔离后端——只管容器与 UDS 调用，不懂 Lease；隔离参数与规格第 12 节一一对应
@@ -74,10 +79,10 @@ class DockerBackend:
             await asyncio.sleep(0.1)
         raise TimeoutError("plugin.sock not ready in time")
     async def invoke(self, instance: CapsuleInstance, request: dict, timeout: float | None = None) -> dict:
-        # 作用：经 plugin.sock 向容器发送单条 NDJSON JSON-RPC 请求并等待响应
+        # 作用：经 plugin.sock 向容器发送单条 NDJSON JSON-RPC 请求并等待响应；响应受 2MB 上限约束
         timeout = timeout or self._invoke_timeout
         try:
-            reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(instance.plugin_sock)), 5.0)
+            reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(instance.plugin_sock), limit=MAX_RESPONSE_BYTES + 4096), 5.0)
         except (NotImplementedError, OSError) as exc:
             raise RuntimeError(f"CAPSULE_UNAVAILABLE: {exc}") from exc
         try:
@@ -86,12 +91,15 @@ class DockerBackend:
             line = await asyncio.wait_for(reader.readline(), timeout)
         except asyncio.TimeoutError as exc:
             raise RuntimeError("CAPSULE_TIMEOUT: invocation timed out") from exc
+        except (asyncio.LimitOverrunError, ValueError) as exc:
+            raise RuntimeError("CAPSULE_OUTPUT_TOO_LARGE: response exceeds 2MB limit") from exc
         except (OSError, ConnectionError) as exc:
             raise RuntimeError(f"CAPSULE_PROTOCOL_ERROR: {exc}") from exc
         finally:
             writer.close()
         if not line:
             raise RuntimeError("CAPSULE_PROTOCOL_ERROR: empty response from capsule")
+        enforce_response_limit(line)
         try:
             msg = json.loads(line)
         except json.JSONDecodeError as exc:
