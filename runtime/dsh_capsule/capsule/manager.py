@@ -32,14 +32,20 @@ class CapsuleManager:
             for tool in manifest.tools
         ]
     async def invoke(self, tool_name: str, args: dict, timeout: float | None = None) -> dict:
-        # 作用：执行一次工具调用——定位所属 Capsule、确保实例健康、经 UDS 下发 tool.invoke
+        # 作用：执行一次工具调用——定位所属 Capsule、确保实例健康、经 UDS 下发 tool.invoke；
+        # 超时/协议错误/容器崩溃一律销毁实例（下次调用强制重建），防止病态实例继续服务（Fail Closed）
         manifest = self._tool_owners.get(tool_name)
         if manifest is None:
             raise RuntimeError(f"CAPSULE_NOT_FOUND: unknown tool: {tool_name}")
         instance = await self._ensure_instance(manifest)
         self._invoke_seq += 1
         request = {"jsonrpc": "2.0", "id": f"capsule-{self._invoke_seq}", "method": "tool.invoke", "params": {"name": tool_name, "args": args or {}}}
-        return await self._backend.invoke(instance, request, timeout)
+        try:
+            return await self._backend.invoke(instance, request, timeout)
+        except RuntimeError:
+            await self._backend.stop(instance)
+            self._instances.pop(manifest.metadata.id, None)
+            raise
     async def _ensure_instance(self, manifest: CapsuleManifest) -> CapsuleInstance:
         # 作用：获取或启动指定 Capsule 的实例；已存在但不健康则重建
         instance = self._instances.get(manifest.metadata.id)
