@@ -1,0 +1,25 @@
+apiVersion: dsh-capsule/v1
+kind: Capsule
+metadata:
+  id: hello
+  version: 0.1.0
+  description: Minimal hello-world Capsule for Phase 1 verification.
+runtime:
+  image: dsh-capsule/hello:0.1.0
+  command:
+    - python
+    - /app/app.py
+resources:
+  memory_mb: 256
+  cpus: 0.5
+  pids: 64
+tools:
+  - name: hello_capsule
+    description: Say hello from inside an isolated container.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties:
+        name:
+          type: string
+          description: Who to greet.
