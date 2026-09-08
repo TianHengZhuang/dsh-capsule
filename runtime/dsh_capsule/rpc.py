@@ -63,8 +63,13 @@ class RpcConnection:
                 if msg_id is not None:
                     await self._send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": exc.code, "message": str(exc)}})
             except Exception as exc:
+                # 作用：业务异常统一转 RPC error；携带 str 型 code（如 LeaseError 的 LEASE_REJECTED）时附加到 error.data.code 供对端结构化取用
                 if msg_id is not None:
-                    await self._send({"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32603, "message": str(exc)}})
+                    error: dict = {"code": -32603, "message": str(exc)}
+                    code = getattr(exc, "code", None)
+                    if isinstance(code, str):
+                        error["data"] = {"code": code}
+                    await self._send({"jsonrpc": "2.0", "id": msg_id, "error": error})
             else:
                 if msg_id is not None:
                     await self._send({"jsonrpc": "2.0", "id": msg_id, "result": result})
