@@ -63,5 +63,9 @@ async def attack_dead_loop(args: dict, ctx) -> dict:
 async def attack_crash(args: dict, ctx) -> dict:
     # 作用：进程自杀——验证容器崩溃被隔离且实例可自动重建
     os._exit(137)
+@app.tool("try_unauthorized_broker_action")
+async def try_unauthorized_broker_action(args: dict, ctx) -> dict:
+    # 作用：请求 manifest 未声明的越权 action（repo.delete）——宿主 BrokerPolicy 必须 CAPABILITY_DENIED（规格第 27 节）
+    return await ctx.broker.call(provider="github", action="repo.delete", resource="repo:foo/bar", payload={})
 if __name__ == "__main__":
     app.run()

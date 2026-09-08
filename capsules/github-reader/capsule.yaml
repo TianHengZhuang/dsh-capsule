@@ -1,0 +1,38 @@
+apiVersion: dsh-capsule/v1
+kind: Capsule
+metadata:
+  id: github-reader
+  version: 0.1.0
+  description: Read GitHub issues through the DSH credential broker.
+runtime:
+  image: dsh-capsule/github-reader:0.1.0
+  command:
+    - python
+    - /app/app.py
+resources:
+  memory_mb: 256
+  cpus: 0.5
+  pids: 64
+credentials:
+  - provider: github
+    credential_ref: GITHUB_TOKEN
+    allowed_actions:
+      - issues.read
+    default_ttl_seconds: 600
+    max_ttl_seconds: 1800
+tools:
+  - name: github_get_issue
+    description: Read one GitHub issue from a repository.
+    parameters:
+      type: object
+      additionalProperties: false
+      required:
+        - repo
+        - issue_number
+      properties:
+        repo:
+          type: string
+          description: owner/repo
+        issue_number:
+          type: integer
+          minimum: 1

@@ -2,6 +2,10 @@ import asyncio
 import os
 import sys
 from pathlib import Path
+from dsh_capsule.broker.credentials import CredentialResolver
+from dsh_capsule.broker.github import GitHubProvider
+from dsh_capsule.broker.providers import ProviderRegistry
+from dsh_capsule.broker.server import BrokerServer
 from dsh_capsule.capsule.manager import CapsuleManager
 from dsh_capsule.lease.approval import ApprovalClient
 from dsh_capsule.lease.gateway import LeaseGateway, DEFAULT_TTL_SECONDS
@@ -15,7 +19,7 @@ def register_methods(conn: RpcConnection, manager: CapsuleManager, gateway: Leas
     conn.register("system.ping", lambda params: {"pong": True})
     conn.register("system.call_host", lambda params: conn.call(params["method"], params.get("params") or {}))
     conn.register("capsule.list_tools", lambda params: manager.list_tools())
-    conn.register("capsule.invoke", lambda params: manager.invoke(params["tool"], params.get("args") or {}, params.get("timeout")))
+    conn.register("capsule.invoke", lambda params: manager.invoke(params["tool"], params.get("args") or {}, params.get("timeout"), params.get("sessionId")))
     conn.register("lease.request", lambda params: handle_lease_request(gateway, params))
 async def handle_lease_request(gateway: LeaseGateway, params: dict) -> dict:
     # 作用：lease.request 入口（规格第 18 节签发链路）——参数显式校验（缺失/类型非法即 JSON-RPC invalid params）；
@@ -36,12 +40,19 @@ async def handle_lease_request(gateway: LeaseGateway, params: dict) -> dict:
     )
     return {"leaseId": lease.id, "capsuleId": lease.capsule_id, "provider": lease.provider, "resource": lease.resource, "actions": sorted(lease.actions), "status": lease.status, "expiresAt": lease.expires_at}
 async def amain() -> None:
-    # 作用：异步入口——组装 CapsuleManager / LeaseStore / LeaseGateway（含反向 Approval 通道）并运行 RPC 主循环直到 stdin EOF；退出前回收容器与存储
-    manager = CapsuleManager(os.environ.get("DSH_CAPSULE_DIR") or DEFAULT_CAPSULES_DIR)
+    # 作用：异步入口——组装 CapsuleManager（含 per-instance Broker：Lease 授权链路+凭据通道+Provider 注册表）并运行
+    # RPC 主循环直到 stdin EOF；退出前回收容器与存储
     store = LeaseStore(os.environ.get("DSH_CAPSULE_LEASES_DB") or DEFAULT_LEASES_DB)
     await store.connect()
     conn = RpcConnection(sys.stdin.buffer, sys.stdout.buffer)
     gateway = LeaseGateway(LeaseService(store), ApprovalClient(conn))
+    resolver = CredentialResolver(conn)
+    providers = ProviderRegistry()
+    providers.register(GitHubProvider())
+    manager = CapsuleManager(
+        os.environ.get("DSH_CAPSULE_DIR") or DEFAULT_CAPSULES_DIR,
+        broker_factory=lambda manifest, instance: BrokerServer(manifest, instance, gateway, resolver, providers),
+    )
     register_methods(conn, manager, gateway)
     try:
         await conn.run()
