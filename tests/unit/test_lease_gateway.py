@@ -1,4 +1,5 @@
 import asyncio
+import time
 import pytest
 from dsh_capsule.lease.approval import ApprovalClient
 from dsh_capsule.lease.gateway import LeaseGateway
@@ -59,12 +60,37 @@ def test_new_action_requires_new_approval(gateway_parts):
     assert second.id != first.id
     assert "issues.write" in second.actions
 def test_cross_session_no_reuse(gateway_parts):
-    # 作用：Session B 请求同资源不走 Session A 的复用路径，必须重新授权（不能跨 Session 复用）
+    # 作用：Session B 尝试复用 Session A 的 Lease 即 LEASE_SESSION_MISMATCH，且不会为 B 静默重签（规格第 24 节与第 37 节 Demo 第 8 项）
     gateway, conn = _make_gateway(gateway_parts, approval_result={"decision": "allowed-once"})
     asyncio.run(gateway.request(**BASE))
-    lease_b = asyncio.run(gateway.request(**{**BASE, "session_id": "S200"}))
+    with pytest.raises(LeaseError, match="LEASE_SESSION_MISMATCH"):
+        asyncio.run(gateway.request(**{**BASE, "session_id": "S200"}))
+    assert len(conn.calls) == 1
+def test_cross_instance_no_reuse(gateway_parts):
+    # 作用：其他实例尝试复用同资源 ACTIVE Lease 即 LEASE_CAPSULE_MISMATCH（Lease 绑定实例，Fail Closed）
+    gateway, conn = _make_gateway(gateway_parts, approval_result={"decision": "allowed-once"})
+    asyncio.run(gateway.request(**BASE))
+    with pytest.raises(LeaseError, match="LEASE_CAPSULE_MISMATCH"):
+        asyncio.run(gateway.request(**{**BASE, "capsule_instance_id": "inst-2"}))
+    assert len(conn.calls) == 1
+def test_revoked_lease_blocks_next_request(gateway_parts):
+    # 作用：撤销后的下一次请求立即 LEASE_REVOKED，且不会自动重签（规格第 20 节"绝对不能等到重启才生效"）
+    gateway, conn = _make_gateway(gateway_parts, approval_result={"decision": "allowed-once"})
+    lease = asyncio.run(gateway.request(**BASE))
+    asyncio.run(LeaseService(gateway_parts).revoke(lease.id))
+    with pytest.raises(LeaseError, match="LEASE_REVOKED"):
+        asyncio.run(gateway.request(**BASE))
+    assert len(conn.calls) == 1
+def test_expired_lease_reauthorizes(gateway_parts):
+    # 作用：Lease 过期后不复用（复用路径按 expires_at 拒绝）也不阻断，走宿主重新授权签发新 Lease（规格第 21 节）
+    gateway, conn = _make_gateway(gateway_parts, approval_result={"decision": "allowed-once"})
+    first = asyncio.run(gateway.request(**BASE, ttl_seconds=1))
+    first.expires_at = time.time() - 1
+    asyncio.run(gateway_parts.update_status(first.id, "EXPIRED", "forced expiry for test"))
+    second = asyncio.run(gateway.request(**BASE))
     assert len(conn.calls) == 2
-    assert lease_b.session_id == "S200"
+    assert second.id != first.id
+    assert second.status == "ACTIVE"
 def test_invalid_ttl_rejected_without_approval(gateway_parts):
     # 作用：TTL 非法（<=0 或超上限 1800）在发起授权前即抛 LEASE_REJECTED（Fail Closed）
     gateway, conn = _make_gateway(gateway_parts, approval_result={"decision": "allowed-once"})

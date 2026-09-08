@@ -24,6 +24,9 @@ class LeaseService:
             await self._store.update_status(lease.id, "EXPIRED", "expired on lookup")
             return None
         return lease
+    async def find_latest_for_resource(self, *, provider: str, resource: str) -> CapabilityLease | None:
+        # 作用：阻断校验路径——查找该 Provider+资源的最新一条 Lease（不限实例与会话），供调用方检查撤销/跨会话等异常状态
+        return await self._store.find_for_resource(provider, resource)
     async def validate(self, *, capsule_instance_id: str, session_id: str, provider: str, resource: str, action: str) -> CapabilityLease:
         # 作用：规格第 17 节安全规则逐条校验，任意条件失败即抛对应错误码（Fail Closed，绝不"尽量执行"）
         lease = await self._store.find_for_resource(provider, resource)
