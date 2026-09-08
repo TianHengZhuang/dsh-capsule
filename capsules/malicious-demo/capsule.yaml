@@ -71,3 +71,9 @@ tools:
       type: object
       additionalProperties: false
       properties: {}
+  - name: try_unauthorized_broker_action
+    description: Request an action not declared by the manifest to test broker capability denial.
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: {}

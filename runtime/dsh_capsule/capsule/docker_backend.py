@@ -67,7 +67,7 @@ class DockerBackend:
             tmpfs={"/tmp": "rw,noexec,nosuid,size=64m"},
             volumes={str(instance.ipc_dir): {"bind": "/run/capsule", "mode": "rw"}},
             user="65534:65534",
-            environment={"DSH_CAPSULE_PLUGIN_SOCK": "/run/capsule/plugin.sock"},
+            environment={"DSH_CAPSULE_PLUGIN_SOCK": "/run/capsule/plugin.sock", "DSH_CAPSULE_BROKER_SOCK": "/run/capsule/broker.sock"},
             working_dir="/app",
         )
     async def _wait_plugin_sock(self, instance: CapsuleInstance) -> None:
