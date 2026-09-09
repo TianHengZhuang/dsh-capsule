@@ -1,10 +1,10 @@
 <p align="center">
-  <img src="assets/hero.svg" alt="DSH Capsule — isolated plugin runtime for DeepSeek Harness" width="100%" />
+  <img src="assets/hero-cn.svg" alt="DSH Capsule — 面向 DeepSeek Harness 的第三方插件安全运行时" width="100%" />
 </p>
 
 <p align="center">
-  <a href="#deepseek-harness-plugin"><img src="https://img.shields.io/badge/DeepSeek_Harness-Plugin-4F6BFF?style=for-the-badge" alt="DeepSeek Harness Plugin" /></a>
-  <a href="#deepseek-harness-plugin"><img src="https://img.shields.io/badge/DSH-Plugin-6D5AE6?style=for-the-badge" alt="DSH Plugin" /></a>
+  <a href="#-deepseek-harness-插件"><img src="https://img.shields.io/badge/DeepSeek_Harness-Plugin-4F6BFF?style=for-the-badge" alt="DeepSeek Harness Plugin" /></a>
+  <a href="#-deepseek-harness-插件"><img src="https://img.shields.io/badge/DSH-Plugin-6D5AE6?style=for-the-badge" alt="DSH Plugin" /></a>
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
   <img src="https://img.shields.io/badge/Docker-required-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" />
@@ -12,87 +12,103 @@
 </p>
 
 <p align="center">
-  <b>Run untrusted Agent tools safely. Give capabilities, not credentials.</b>
+  <b>让不可信 Agent 工具安全运行。授予能力，而不是交出凭证。</b>
 </p>
 
 <p align="center">
-  DSH Capsule is an isolated third-party Tool Plugin runtime for <b>DeepSeek Harness</b>.<br/>
-  Untrusted plugin code runs inside a restricted Docker Capsule, while a trusted host-side broker mediates external capabilities through short-lived, session-bound, revocable leases.
+  <b>DSH Capsule</b> 是面向 <b>DeepSeek Harness</b> 的隔离式第三方 Tool Plugin Runtime。<br/>
+  插件代码运行在受限 Docker Capsule 中；所有外部能力由可信宿主通过短期、Session 绑定、可撤销的 Capability Lease 进行代理授权。
 </p>
 
 <p align="center">
-  <a href="#-why-dsh-capsule">Why Capsule?</a> ·
-  <a href="#-architecture">Architecture</a> ·
-  <a href="#-security-model">Security</a> ·
-  <a href="#-quick-start">Quick Start</a> ·
-  <a href="#-build-a-capsule">Build a Capsule</a> ·
-  <a href="#-security-in-action">Security Tests</a> ·
+  <a href="README.md">English</a> · <b>简体中文</b>
+</p>
+
+<p align="center">
+  <a href="#-为什么需要-dsh-capsule">为什么需要它？</a> ·
+  <a href="#-整体架构">整体架构</a> ·
+  <a href="#-安全模型">安全模型</a> ·
+  <a href="#-快速开始">快速开始</a> ·
+  <a href="#-开发一个-capsule">开发 Capsule</a> ·
+  <a href="#-security-in-action">安全测试</a> ·
   <a href="#-roadmap">Roadmap</a>
 </p>
 
 ---
 
-## DeepSeek Harness Plugin
+## 🔌 DeepSeek Harness 插件
 
-> **DSH Capsule is built as an independent DeepSeek Harness Plugin.** It does not modify DeepSeek Harness Core.
+> **DSH Capsule 以独立 DeepSeek Harness Plugin 的形式工作，不修改 DeepSeek Harness Core。**
 
-The DSH-facing TypeScript adapter is intentionally thin: lifecycle integration, approval, credential resolution, and bidirectional RPC. Security-sensitive execution logic lives in the Python Runtime, outside the Agent process.
+面向 DSH 的 TypeScript Adapter 被刻意保持得很薄，只负责生命周期接入、审批、凭证解析和双向 RPC；真正与安全相关的执行逻辑全部下沉到独立的 Python Runtime，使 Agent 进程与第三方插件执行环境彻底解耦。
 
 > [!IMPORTANT]
-> **Current status:** the isolated Runtime, Capsule lifecycle, Broker, Capability Lease, GitHub provider, SDK, CLI and security test scaffolding are implemented. Automatic `capsule.list_tools → ctx.tools.register()` wiring in the DSH adapter is still being integrated and is intentionally **not** claimed as complete.
+> **当前状态：**隔离 Runtime、Capsule 生命周期、Capability Broker、Capability Lease、GitHub Provider、Python SDK、CLI 与安全测试框架已经实现。DSH Adapter 中自动完成 `capsule.list_tools → ctx.tools.register()` 的 Tool 注册链路仍在接入，因此当前版本定位为 **MVP / Developer Preview**，不宣称已经达到生产级成熟度。
 
 ---
 
-## ✦ Why DSH Capsule?
+## ✦ 为什么需要 DSH Capsule？
 
-Modern Agent systems are increasingly extensible. That is powerful — and dangerous.
+Agent 正在从“回答问题”走向“执行真实操作”。与此同时，Tool / Plugin 生态会越来越开放。
 
-A third-party Tool Plugin may contain vulnerable dependencies, attempt to read host files, inspect environment variables, access Docker, call the public network directly, retain long-lived credentials, or simply hang forever.
+这意味着 Agent 可能开始运行来自第三方的代码，而第三方插件可能：
 
-Traditional plugin execution often collapses two very different questions into one:
+- 依赖存在供应链漏洞；
+- 读取宿主机文件或环境变量；
+- 访问 Docker Socket 获取宿主控制权；
+- 绕过 Agent 权限直接访问公网；
+- 长期持有 GitHub、云服务、企业系统 Token；
+- 发起未声明的高危操作；
+- 死循环、崩溃或返回超大结果拖垮 Agent Runtime。
 
-1. **Can this plugin code run?**
-2. **What is this plugin allowed to do right now?**
+传统插件系统往往把两个完全不同的问题混在了一起：
 
-DSH Capsule separates them.
+1. **这段插件代码能不能运行？**
+2. **这个插件此时此刻究竟被允许做什么？**
+
+DSH Capsule 将两者彻底拆开。
 
 <table>
 <tr>
 <td width="33%" valign="top">
-<h3>🛡️ Isolated Runtime</h3>
-Third-party code runs outside the Harness process in a restricted Docker container with an explicit security baseline.
+<h3>🛡️ 隔离式 Plugin Runtime</h3>
+第三方代码不进入 Harness 主进程，而是在明确受限的 Docker Capsule 中执行，默认不给予任何宿主环境能力。
 </td>
 <td width="33%" valign="top">
-<h3>🔑 Capability Leases</h3>
-External actions are granted through short-lived, session-bound, resource-scoped and revocable permissions.
+<h3>🔑 Capability Lease</h3>
+外部操作通过短生命周期、Session 绑定、资源级、Action 级且可主动撤销的能力租约授权。
 </td>
 <td width="33%" valign="top">
-<h3>🔒 Zero-Secret Plugins</h3>
-Long-lived host credentials are resolved on the trusted side per operation and never injected into the plugin container.
+<h3>🔒 Zero-Secret Plugin</h3>
+长期凭证只存在于可信宿主侧，每次 Provider Operation 动态解析，永远不注入第三方插件容器。
 </td>
 </tr>
 </table>
 
-### One sentence
+### 一句话理解
 
-> **The plugin can do work without owning the host.**
+> **插件可以做事，但插件不需要拥有宿主。**
+
+更进一步：
+
+> **让第三方 Agent 插件拥有 Capability，而不是拥有 Credential。**
 
 ---
 
-## 🧭 Architecture
+## 🧭 整体架构
 
 ```mermaid
 flowchart LR
     A[DSH Agent] --> B[DSH Tool Registry]
-    B --> C[TypeScript Adapter\nTrusted / Thin]
-    C <-->|Bidirectional NDJSON JSON-RPC\nstdin / stdout| D[Python Capsule Runtime\nTrusted Core]
+    B --> C[TypeScript Adapter\n可信 / 薄适配层]
+    C <-->|双向 NDJSON JSON-RPC\nstdin / stdout| D[Python Capsule Runtime\n可信核心]
     D --> E[Capsule Manager]
-    E <-->|per-instance Unix Domain Socket| F[Docker Capsule\nUNTRUSTED]
-    F -->|broker.call| G[Capability Broker\nTrusted Host]
-    G --> H[Lease Validation]
-    H --> I[Credential Resolve\nper operation]
+    E <-->|实例级 Unix Domain Socket| F[Docker Capsule\n不可信第三方插件]
+    F -->|broker.call| G[Capability Broker\n可信宿主]
+    G --> H[Lease 校验]
+    H --> I[Credential 动态解析\n每次操作]
     I --> J[Provider Adapter]
-    J --> K[External API]
+    J --> K[外部 API]
     K --> J --> G --> F
 
     style F fill:#fff1f2,stroke:#fb7185,color:#881337
@@ -101,7 +117,7 @@ flowchart LR
     style G fill:#ecfdf5,stroke:#34d399,color:#14532d
 ```
 
-### Design rule: thin adapter, trusted core
+### 核心设计：Thin Adapter + Trusted Core
 
 ```text
 Agent
@@ -110,42 +126,42 @@ Agent
 DeepSeek Harness
   │
   ▼
-TypeScript Adapter        ← DSH integration only
+TypeScript Adapter        ← 只负责 DSH 接入
   │
   │  NDJSON JSON-RPC
   ▼
-Python Runtime            ← lifecycle / isolation / lease / broker / storage
+Python Runtime            ← 生命周期 / 隔离 / Lease / Broker / 存储
   │
   │  Unix Domain Socket
   ▼
-Docker Capsule            ← third-party code, always untrusted
+Docker Capsule            ← 第三方代码，始终视为不可信
   │
   │  broker.call
   ▼
-Capability Broker         ← validates authority, resolves secret, calls provider
+Capability Broker         ← 验证权限、解析凭证、代理调用 Provider
 ```
 
-The adapter **does not become a second business runtime**. This keeps the DSH integration surface small and puts the security model in one place.
+Adapter **不承担第二套业务 Runtime**。这样做可以让 DSH 接入面尽可能小，将生命周期、安全策略、授权模型集中在一个可信核心内实现。
 
 ---
 
-## 🧱 Security Model
+## 🧱 安全模型
 
 <p align="center">
-  <img src="assets/security-model.svg" alt="DSH Capsule trust boundary" width="100%" />
+  <img src="assets/security-model-cn.svg" alt="DSH Capsule 信任边界与安全模型" width="100%" />
 </p>
 
-### Trust boundary
+### Trust Boundary
 
-| Zone | Components | Assumption |
+| 区域 | 组件 | 安全假设 |
 |---|---|---|
-| **Trusted** | DSH Core, TS Adapter, Python Runtime, Lease DB, Provider Adapters | May handle host identity and credentials |
-| **Untrusted** | Capsule code, Capsule dependencies, Capsule input | Must never receive ambient host authority |
-| **Semi-trusted** | Docker Engine, external provider APIs | Required infrastructure / external systems |
+| **可信区域** | DSH Core、TS Adapter、Python Runtime、Lease DB、Provider Adapter | 可处理宿主身份与长期凭证 |
+| **不可信区域** | Capsule 代码、插件依赖、插件输入 | 默认视为潜在恶意，不得获得宿主 Ambient Authority |
+| **半可信区域** | Docker Engine、外部 Provider API | 作为基础设施与外部系统依赖 |
 
-### Docker isolation baseline
+### Docker 默认拒绝基线
 
-Each Capsule is started with an explicit deny-by-default baseline equivalent to:
+每个 Capsule 均以显式的 deny-by-default 安全参数启动，核心约束等价于：
 
 ```bash
 --read-only
@@ -158,122 +174,132 @@ Each Capsule is started with an explicit deny-by-default baseline equivalent to:
 --tmpfs /tmp:rw,noexec,nosuid,size=64m
 ```
 
-Additionally:
+除此之外：
 
-- runs as a non-root user (`65534:65534`)
-- no host workspace mount
-- no `~/.dsh` mount
-- no Docker Socket mount
-- no host network
-- no privileged mode
-- no bulk host environment injection
-- only the instance-scoped IPC directory is writable
-- tool invocation timeout defaults to **30s**
-- provider request timeout defaults to **15s**
-- a single RPC response is capped at **2 MB**
+- 使用非 Root 用户运行（`65534:65534`）；
+- 不挂载宿主 Workspace；
+- 不挂载 `~/.dsh`；
+- 不挂载 Docker Socket；
+- 不允许 Host Network；
+- 禁止 privileged mode；
+- 不批量注入宿主环境变量；
+- 仅实例级 IPC 目录可写；
+- Tool Invocation 默认超时 **30s**；
+- Provider Request 默认超时 **15s**；
+- 单次 RPC Response 最大 **2 MB**。
 
 > [!NOTE]
-> Docker is a containment boundary for this MVP, not a claim of VM-grade isolation. microVM, eBPF, custom seccomp generation and Kubernetes are intentionally outside the current scope.
+> 当前 MVP 将 Docker 作为执行隔离边界，但**不宣称具备 VM / microVM 级别的强隔离能力**。microVM、eBPF、动态 seccomp、Kubernetes 等能力属于后续演进方向，不属于当前版本的安全承诺。
 
 ---
 
-## 🔑 Capability Leases
+## 🔑 Capability Lease：Agent 权限不应该是永久的
 
 <p align="center">
-  <img src="assets/lease-flow.svg" alt="Capability Lease flow" width="100%" />
+  <img src="assets/lease-flow-cn.svg" alt="Capability Lease 授权链路" width="100%" />
 </p>
 
-A plugin does **not** receive broad access such as “GitHub allowed”. It receives a narrowly scoped lease bound to runtime context:
+DSH Capsule 不会简单授予插件一个宽泛的“允许访问 GitHub”。
+
+每一份能力都绑定到具体运行上下文：
 
 ```text
 Capsule Instance × Session × Provider × Resource × Action × TTL
 ```
 
-For example:
+例如：
 
 ```text
 instance:  cap_8f1...
 session:   sess_42
 provider:  github
 resource:  repo:owner/project
- action:   issues.read
+action:    issues.read
 TTL:       600 seconds
 ```
 
-The Lease lifecycle supports:
+这意味着权限不再是“插件拥有 GitHub 权限”，而是：
 
-- **issue** after host approval
-- **reuse** for matching active authority
-- **expire** automatically by time
-- **revoke** a single Lease
-- **revoke-session**
-- **revoke-capsule**
-- reject **cross-session reuse**
-- reject **cross-instance reuse**
-- reject **undeclared actions**
-- **Fail Closed** on every abnormal validation path
+> **当前 Capsule 实例，在当前 Agent Session 中，在接下来的 600 秒内，只允许读取指定仓库的 Issue。**
 
-### Why not ordinary RBAC?
+Lease 生命周期支持：
 
-RBAC answers: _“What can this role generally do?”_
+- **issue**：宿主审批后创建授权；
+- **reuse**：匹配到仍有效的相同能力时复用；
+- **expire**：TTL 到期后自动失效；
+- **revoke**：主动撤销单个 Lease；
+- **revoke-session**：撤销某个 Session 的全部能力；
+- **revoke-capsule**：撤销某个 Capsule 的全部能力；
+- 拒绝 **跨 Session 复用**；
+- 拒绝 **跨 Capsule Instance 复用**；
+- 拒绝 **Manifest 未声明 Action**；
+- 任意异常校验路径统一 **Fail Closed**。
 
-Capability Lease answers: _“Can this exact Capsule instance, in this exact Agent session, perform this exact action on this exact resource right now?”_
+### 为什么不是普通 RBAC？
 
-That distinction matters for long-running and tool-augmented Agents.
+RBAC 回答的是：
+
+> “这个角色通常可以做什么？”
+
+Capability Lease 回答的是：
+
+> “这个具体 Capsule 实例，在这个具体 Agent Session 中，**现在**是否允许对这个具体资源执行这个具体动作？”
+
+对于长生命周期 Agent、第三方 Tool 与动态工作流，这种区别非常关键。
 
 ---
 
 ## 🔒 Credentialless Plugin Execution
 
-The Capsule never needs the host's long-lived token.
+第三方 Capsule **不需要，也不应该拿到宿主长期 Token**。
 
 ```mermaid
 sequenceDiagram
-    participant C as Untrusted Capsule
+    participant C as 不可信 Capsule
     participant B as Capability Broker
     participant L as Lease Service
     participant H as DSH Host
     participant P as Provider API
 
     C->>B: broker.call(provider, action, resource, payload)
-    B->>L: validate / request Lease
-    L-->>B: active capability
+    B->>L: 校验 / 请求 Capability Lease
+    L-->>B: 返回有效能力
     B->>H: resolve credential_ref
-    H-->>B: credential (trusted memory only)
-    B->>P: execute provider operation
-    P-->>B: provider result
-    B-->>C: sanitized result — no secret
+    H-->>B: Credential（仅可信内存）
+    B->>P: 代理执行 Provider Operation
+    P-->>B: Provider Result
+    B-->>C: Sanitized Result（不包含 Secret）
 ```
 
-**Credential properties:**
+Credential 的核心约束：
 
-- resolved **per provider operation**
-- not persisted to SQLite
-- not injected into Capsule environment
-- not returned in Tool Result
-- not intentionally included in logs or errors
-- provider access is constrained by manifest-declared allowlists
+- **每次 Provider Operation 动态解析**；
+- 不写入 SQLite；
+- 不注入 Capsule Environment；
+- 不返回到 Tool Result；
+- 不主动进入日志与异常信息；
+- Provider 访问范围由 Manifest Allowlist 进一步约束。
 
-The result is a simple rule:
+最终形成一条非常简单的安全原则：
 
-> **Authority may cross the boundary. Secrets do not.**
+> **Authority 可以跨越边界，Secret 不可以。**
 
 ---
 
 ## ⚙️ Runtime Internals
 
-### Two IPC layers
+### 两层 IPC
 
-| Path | Protocol | Purpose |
+| 链路 | 协议 | 作用 |
 |---|---|---|
-| **TypeScript ↔ Python** | Bidirectional NDJSON JSON-RPC over stdin/stdout | DSH lifecycle, tool calls, host approval, credential resolution |
-| **Python ↔ Capsule** | Per-instance Unix Domain Socket | isolated tool invocation and Broker requests |
+| **TypeScript ↔ Python** | stdin/stdout 上的双向 NDJSON JSON-RPC | DSH 生命周期、Tool 调用、宿主审批、Credential Resolution |
+| **Python ↔ Capsule** | 每实例独立 Unix Domain Socket | 隔离 Tool Invocation 与 Broker Request |
 
-Python stdout is reserved for RPC. Runtime logs go to stderr so protocol traffic cannot be corrupted by ordinary logs.
+Python stdout 被严格保留给 RPC 协议，Runtime 日志统一进入 stderr，避免普通日志污染协议流。
 
-### Runtime RPC surface
+### Runtime RPC Surface
 
-Current trusted Runtime exposes methods including:
+当前可信 Runtime 暴露的核心方法包括：
 
 ```text
 system.ping
@@ -283,7 +309,7 @@ capsule.invoke
 lease.request
 ```
 
-Host callbacks include:
+宿主回调包括：
 
 ```text
 host.approval.request_lease
@@ -294,49 +320,55 @@ host.credential.resolve
 
 ## 🧪 Security in Action
 
-DSH Capsule includes a deliberately hostile `malicious-demo` Capsule. It exists to attack the Runtime, not to demonstrate happy-path behavior.
+DSH Capsule 内置一个故意带有攻击行为的 `malicious-demo` Capsule。
 
-| Attack probe | Expected boundary |
+它不是为了展示 Happy Path，而是专门用来**攻击 Runtime 边界**。
+
+| 攻击探针 | 预期结果 |
 |---|---|
-| Read host-side files | Capsule only sees its own container filesystem |
-| Dump host environment | only explicitly injected non-sensitive runtime vars are visible |
-| Direct outbound TCP | blocked by `network none` |
-| Access `/var/run/docker.sock` | unavailable because it is never mounted |
-| Write `/app`, `/etc`, `/usr`, `/var` | blocked by read-only root filesystem |
-| Return > 2 MB payload | rejected by response limit |
-| Infinite loop | terminated by invocation timeout path |
-| Crash plugin process | crash contained to Capsule instance |
-| Call undeclared Broker action | denied by Broker policy |
-| Reuse Lease across Session | denied |
-| Reuse Lease across instance | denied |
-| Use expired / revoked Lease | denied |
+| 读取宿主文件 | 只能看到容器自身文件系统 |
+| Dump 宿主环境变量 | 只能看到显式注入的非敏感 Runtime 变量 |
+| 直接建立公网 TCP | 被 `network none` 阻断 |
+| 访问 `/var/run/docker.sock` | Docker Socket 从未挂载，无法访问 |
+| 写 `/app`、`/etc`、`/usr`、`/var` | 被 Read-Only RootFS 阻断 |
+| 返回超过 2 MB 的结果 | 被 Response Limit 拒绝 |
+| 无限循环 | 由 Invocation Timeout 终止 |
+| 插件进程崩溃 | 故障限制在当前 Capsule Instance |
+| 调用未声明 Broker Action | Broker Policy 拒绝 |
+| 跨 Session 复用 Lease | 拒绝 |
+| 跨 Capsule Instance 复用 Lease | 拒绝 |
+| 使用过期 / 已撤销 Lease | 拒绝 |
 
-Example hostile tool:
+例如，一个恶意 Tool 尝试调用 Manifest 中从未声明的 `repo.delete`：
 
 ```python
 @app.tool("try_unauthorized_broker_action")
 async def try_unauthorized_broker_action(args: dict, ctx) -> dict:
     return await ctx.broker.call(
         provider="github",
-        action="repo.delete",            # not declared by manifest
+        action="repo.delete",            # Manifest 未声明
         resource="repo:foo/bar",
         payload={},
     )
 ```
 
-The expected outcome is **`CAPABILITY_DENIED`**, not “best effort”.
+预期结果不是“尽量执行”，而是明确返回：
+
+```text
+CAPABILITY_DENIED
+```
 
 ---
 
-## 🚀 Quick Start
+## 🚀 快速开始
 
-### Requirements
+### 环境要求
 
 - Linux
 - Docker Engine
 - Python **3.11+**
-- `uv` recommended for Python dependency management
-- Node.js + pnpm for the TypeScript adapter
+- 推荐使用 `uv` 管理 Python 依赖
+- Node.js + pnpm，用于 TypeScript Adapter
 
 ### 1. Clone
 
@@ -345,7 +377,7 @@ git clone <your-repository-url>
 cd dsh-capsule
 ```
 
-### 2. Install Python Runtime dependencies
+### 2. 安装 Python Runtime 依赖
 
 ```bash
 cd runtime
@@ -353,7 +385,7 @@ uv sync --dev
 cd ..
 ```
 
-### 3. Build example Capsules
+### 3. 构建示例 Capsule
 
 ```bash
 docker build -t dsh-capsule/hello:0.1.0 capsules/hello
@@ -361,19 +393,19 @@ docker build -t dsh-capsule/github-reader:0.1.0 capsules/github-reader
 docker build -t dsh-capsule/malicious-demo:0.1.0 capsules/malicious-demo
 ```
 
-### 4. Run Python tests
+### 4. 运行 Python 测试
 
 ```bash
 uv run --project runtime pytest -q
 ```
 
-Run only security scenarios:
+只运行 Security Scenarios：
 
 ```bash
 uv run --project runtime pytest tests/security -q
 ```
 
-### 5. Build and test the DSH adapter
+### 5. 构建并测试 DSH Adapter
 
 ```bash
 pnpm install
@@ -381,28 +413,28 @@ pnpm build
 pnpm test
 ```
 
-### 6. Runtime smoke test
+### 6. Runtime Smoke Test
 
-The Runtime speaks NDJSON JSON-RPC over stdin/stdout. A minimal ping request is:
+Runtime 通过 stdin/stdout 使用 NDJSON JSON-RPC 通信，最小 Ping 请求：
 
 ```json
 {"jsonrpc":"2.0","id":1,"method":"system.ping","params":{}}
 ```
 
-Expected response:
+预期响应：
 
 ```json
 {"jsonrpc":"2.0","id":1,"result":{"pong":true}}
 ```
 
 > [!WARNING]
-> End-to-end DSH Tool auto-registration is currently being wired through `ctx.tools.register()`. Until that adapter step lands, treat the project as an active **MVP / Developer Preview**, not a finished production package.
+> 当前端到端 DSH Tool 自动注册仍在通过 `ctx.tools.register()` 接入。在该链路完成前，请将项目视为活跃开发中的 **MVP / Developer Preview**，而不是已经完成的生产级包。
 
 ---
 
-## 📦 Build a Capsule
+## 📦 开发一个 Capsule
 
-A Capsule has three pieces:
+一个 Capsule 只需要三个核心文件：
 
 ```text
 my-capsule/
@@ -411,7 +443,7 @@ my-capsule/
 └── app.py
 ```
 
-### 1. Declare the manifest
+### 1. 声明 Manifest
 
 ```yaml
 apiVersion: dsh-capsule/v1
@@ -456,7 +488,7 @@ tools:
           minimum: 1
 ```
 
-### 2. Implement the tool with the Python SDK
+### 2. 使用 Python SDK 实现 Tool
 
 ```python
 from dsh_capsule_sdk.tool import CapsuleApp
@@ -472,7 +504,7 @@ if __name__ == "__main__":
     app.run()
 ```
 
-### 3. Request an external capability — not a secret
+### 3. 请求 Capability，而不是请求 Secret
 
 ```python
 result = await ctx.broker.call(
@@ -483,25 +515,25 @@ result = await ctx.broker.call(
 )
 ```
 
-The Capsule does not receive `GITHUB_TOKEN`. The trusted host resolves it only after the lease and manifest policy are satisfied.
+Capsule 永远不会拿到 `GITHUB_TOKEN`。只有当 Lease 与 Manifest Policy 均验证通过后，可信宿主才会在执行 Provider Operation 时动态解析该 Credential。
 
 ---
 
-## 🧩 Example Capsules
+## 🧩 示例 Capsule
 
-| Capsule | Purpose | Security relevance |
+| Capsule | 用途 | 安全意义 |
 |---|---|---|
-| `hello` | minimal isolated tool | verifies lifecycle + invocation |
-| `github-reader` | read GitHub issue through Broker | demonstrates capability + credential separation |
-| `malicious-demo` | intentionally hostile plugin | probes host files, env, network, Docker socket, output limits, hangs, crashes and unauthorized actions |
+| `hello` | 最小隔离 Tool | 验证生命周期与 Invocation |
+| `github-reader` | 通过 Broker 读取 GitHub Issue | 展示 Capability 与 Credential 解耦 |
+| `malicious-demo` | 故意恶意的第三方插件 | 主动探测宿主文件、环境变量、网络、Docker Socket、输出限制、超时、崩溃与越权行为 |
 
 ---
 
 ## 🛠️ CLI
 
-The repository includes `capsulectl.py` for Lease administration.
+仓库包含 `capsulectl.py`，用于 Lease 运维与撤销管理。
 
-Conceptually supported operations include:
+支持的核心操作包括：
 
 ```text
 leases
@@ -510,15 +542,15 @@ revoke-session <session-id>
 revoke-capsule <capsule-id>
 ```
 
-This makes capability revocation an operational control rather than a theoretical property.
+因此“权限可撤销”不是架构图上的理论属性，而是一个可以被实际执行的 Runtime Control。
 
 ---
 
 ## 🧯 Fail-Closed Error Model
 
-Security-sensitive failures use explicit error codes instead of silently falling through.
+安全相关失败不会静默回退，而是使用明确错误码终止执行。
 
-Examples include:
+例如：
 
 ```text
 LEASE_REQUIRED
@@ -535,17 +567,17 @@ CAPSULE_PROTOCOL_ERROR
 CAPSULE_UNAVAILABLE
 ```
 
-The rule is intentionally boring:
+规则非常简单：
 
-> If authorization cannot be proven, the operation does not happen.
+> **无法证明授权成立，就不执行。**
 
 ---
 
-## 🗂️ Repository Layout
+## 🗂️ 仓库结构
 
 ```text
 .
-├── adapter/                  # thin TypeScript DSH adapter
+├── adapter/                  # 轻量 TypeScript DSH Adapter
 │   └── src/
 │       ├── index.ts
 │       ├── rpc-client.ts
@@ -553,7 +585,7 @@ The rule is intentionally boring:
 │       ├── approval.ts
 │       └── credentials.ts
 │
-├── runtime/                  # trusted Python core
+├── runtime/                  # 可信 Python Runtime Core
 │   └── dsh_capsule/
 │       ├── capsule/          # manifest / instance / manager / Docker backend
 │       ├── lease/            # models / service / gateway / approval
@@ -562,7 +594,7 @@ The rule is intentionally boring:
 │       ├── rpc.py
 │       └── main.py
 │
-├── sdk/python/               # Capsule author SDK
+├── sdk/python/               # Capsule Author SDK
 ├── capsules/
 │   ├── hello/
 │   ├── github-reader/
@@ -577,70 +609,70 @@ The rule is intentionally boring:
 
 ---
 
-## 🧠 Design Principles
+## 🧠 设计原则
 
-### 1. Untrusted means untrusted
+### 1. Untrusted Means Untrusted
 
-The security model does not assume plugin authors are friendly or careful.
+安全模型不假设插件作者友好，也不假设插件代码没有漏洞。
 
-### 2. No ambient authority
+### 2. No Ambient Authority
 
-A Capsule should not inherit host files, host network, host credentials or the Docker control plane merely because it was installed.
+插件仅仅因为“被安装”，并不意味着它应该继承宿主文件、宿主网络、宿主 Credential 或 Docker 控制平面。
 
-### 3. Capabilities over credentials
+### 3. Capabilities over Credentials
 
-Plugins request narrowly-scoped actions. They do not own the underlying long-term secret.
+插件请求的是窄粒度 Action，而不是长期持有底层 Secret。
 
-### 4. Authorization is contextual
+### 4. Authorization is Contextual
 
-A permission valid for one Agent session or Capsule instance is not automatically valid for another.
+一个 Session 或 Capsule Instance 中成立的权限，不会自动在另一个上下文中成立。
 
-### 5. Security checks fail closed
+### 5. Fail Closed
 
-Missing state, stale authority, policy mismatch and protocol errors are denial conditions.
+状态缺失、权限过期、上下文不匹配、策略冲突或协议异常，全部视为拒绝条件。
 
-### 6. Keep the DSH surface thin
+### 6. Keep DSH Thin
 
-DeepSeek Harness integration belongs in TypeScript; Runtime and policy logic stay in the trusted Python core.
+DeepSeek Harness 接入逻辑留在 TypeScript；Runtime、Policy 与 Security Core 统一留在可信 Python Runtime。
 
 ---
 
-## 📊 MVP Scope
+## 📊 MVP 范围
 
-### In scope
+### 已实现
 
-- [x] Python trusted Runtime
-- [x] restricted Docker Capsule execution
-- [x] per-instance Unix Socket IPC
-- [x] manifest-driven resources and declared tools
-- [x] short-lived Capability Lease model
-- [x] session / instance / action validation
-- [x] active Lease revocation
-- [x] trusted Credential Resolver callback
-- [x] Provider allowlist policy
-- [x] GitHub provider prototype
+- [x] Python Trusted Runtime
+- [x] 受限 Docker Capsule 执行
+- [x] 每实例 Unix Socket IPC
+- [x] Manifest 驱动的资源限制与 Tool 声明
+- [x] 短生命周期 Capability Lease
+- [x] Session / Instance / Action 级权限校验
+- [x] Active Lease Revocation
+- [x] Trusted Credential Resolver Callback
+- [x] Provider Allowlist Policy
+- [x] GitHub Provider Prototype
 - [x] Python Capsule SDK
-- [x] malicious Capsule security probes
-- [x] unit / integration / security test structure
-- [x] TypeScript ↔ Python bidirectional RPC
-- [x] host approval / credential callback handlers
-- [ ] DSH `ctx.tools.register()` automatic Capsule Tool registration
-- [ ] end-to-end DSH demo recording / release package
+- [x] Malicious Capsule Security Probes
+- [x] Unit / Integration / Security 测试结构
+- [x] TypeScript ↔ Python 双向 RPC
+- [x] Host Approval / Credential Callback Handler
+- [ ] DSH `ctx.tools.register()` 自动 Capsule Tool 注册
+- [ ] 端到端 DSH Demo / Release Package
 
-### Deliberately out of scope for MVP
+### 当前 MVP 有意不做
 
-- Windows / macOS container runtime support
+- Windows / macOS Container Runtime
 - Kubernetes
-- microVM isolation
-- eBPF policy enforcement
-- generic HTTP proxy
-- arbitrary Cordis plugin compatibility
+- microVM Isolation
+- eBPF Policy Enforcement
+- Generic HTTP Proxy
+- 任意 Cordis Plugin Compatibility
 - Web UI
-- plugin signing / Sigstore
-- SBOM pipeline
+- Plugin Signing / Sigstore
+- SBOM Pipeline
 - Redis / PostgreSQL
 
-Keeping the MVP narrow is a security feature: fewer moving parts, clearer trust boundaries, easier review.
+保持 MVP 足够窄本身也是一种安全策略：**更小的 Trusted Computing Base、更清晰的 Trust Boundary、更容易审计。**
 
 ---
 
@@ -666,78 +698,71 @@ flowchart LR
     style H fill:#f8fafc,stroke:#94a3b8
 ```
 
-Near-term priorities:
+近期优先级：
 
-1. finish `capsule.list_tools → ctx.tools.register()` integration against the installed DSH TypeScript API
-2. run the complete Linux + Docker CI matrix and publish reproducible results
-3. add secret-safe Audit / Trace events for invocation, lease decision and provider execution
-4. tighten local IPC ownership / permissions
-5. add explicit Tool name collision rejection
+1. 完成 `capsule.list_tools → ctx.tools.register()` 与当前 DSH TypeScript API 的正式接入；
+2. 跑通完整 Linux + Docker CI Matrix，并发布可复现测试结果；
+3. 增加 Secret-Safe Audit / Trace，覆盖 Invocation、Lease Decision、Provider Execution；
+4. 收紧本地 IPC Ownership / Permission；
+5. 增加 Tool Name Collision 的显式 Fail-Closed 检查。
 
-Later, after the Runtime boundary is stable: image digest pinning, SBOM and plugin provenance/signature verification.
+等 Runtime Boundary 稳定后，再进入 Plugin Supply Chain：Image Digest Pinning、SBOM、Plugin Provenance / Signature Verification。
 
 ---
 
-## 🖼️ Project Visual
+## 🖼️ Capsule Guardian
 
 <p align="center">
-  <img src="assets/capsule-guardian.png" alt="DSH Capsule guardian mascot" width="210" />
+  <img src="assets/capsule-guardian.png" alt="DSH Capsule Guardian Mascot" width="210" />
 </p>
 
-<p align="center"><i>Safe plugins. Scoped capabilities. No ambient secrets.</i></p>
+<p align="center"><i>隔离插件 · 最小权限 · Secret 不越界</i></p>
 
 ---
 
 ## 🤝 Contributing
 
-Security infrastructure benefits from adversarial review.
+安全基础设施最需要的不是“更多 Happy Path”，而是更多具有攻击性的 Review。
 
-Good contributions include:
+我们尤其欢迎：
 
-- new malicious Capsule probes
-- Lease / Broker negative tests
-- additional provider adapters with narrow action schemas
-- IPC hardening
-- lifecycle race-condition tests
-- documentation improvements
+- 新的 malicious Capsule 攻击探针；
+- Lease / Broker 负向测试；
+- 具有窄 Action Schema 的 Provider Adapter；
+- IPC Hardening；
+- 生命周期 Race Condition 测试；
+- 文档与可复现 Demo 改进。
 
-Before adding a large dependency or broadening the runtime surface, open a design discussion first. The project intentionally favors a small trusted computing base.
+如果一个改动会显著扩大 Runtime Surface 或引入重量级依赖，建议先发起 Design Discussion。DSH Capsule 会优先保持较小的 Trusted Computing Base。
 
 ---
 
 ## 🔐 Security
 
-Please do not treat the current MVP as a hardened multi-tenant cloud sandbox.
+请不要将当前 MVP 视为已经 Hardening 完成的多租户云沙箱。
 
-If you discover a boundary escape, secret exposure path, lease validation bypass or Broker policy bypass, report it privately rather than publishing a working exploit in a public issue.
+如果你发现以下问题：
+
+- Container Boundary Escape；
+- Secret Exposure；
+- Lease Validation Bypass；
+- Broker Policy Bypass；
+- 未授权 Provider Operation；
+
+请优先私下报告，不要直接在公开 Issue 中发布可工作的利用代码。
 
 ---
 
 ## 📜 License
 
-MIT License. See [LICENSE](LICENSE).
+MIT License，详见 [LICENSE](LICENSE)。
 
 ---
 
-<details>
-<summary><b>中文介绍</b></summary>
-<br/>
-
-**DSH Capsule** 是面向 DeepSeek Harness 的隔离式第三方 Tool Plugin Runtime。
-
-它解决两个核心问题：
-
-1. **第三方插件代码怎么安全运行？** —— 插件下沉到受限 Docker Capsule，默认无宿主文件、无宿主环境变量、无公网网络、无 Docker Socket、非 Root、只读 RootFS，并施加 CPU / Memory / PID / Timeout / Output Limit。
-2. **插件怎么访问 GitHub 等真实外部能力，又不拿到长期 Token？** —— 通过可信宿主 Broker + 短期 Capability Lease，把权限绑定到 `Capsule Instance × Session × Provider × Resource × Action × TTL`，Credential 每次操作动态解析，Secret 永不进入插件容器。
-
-一句话：
-
-> **插件可以做事，但插件不需要拥有宿主。**
-
-当前 Runtime 安全核心已经实现，DSH Adapter 的自动 Tool 注册仍在接入中，因此项目状态为 MVP / Developer Preview。
-
-</details>
+<p align="center">
+  <b>Built for DeepSeek Harness · 为开放 Agent 生态构建明确、可验证、可撤销的信任边界。</b>
+</p>
 
 <p align="center">
-  <b>Built for DeepSeek Harness · Designed for an open Agent ecosystem with explicit trust boundaries.</b>
+  <b>Safe Plugins. Scoped Capabilities. No Ambient Secrets.</b>
 </p>
