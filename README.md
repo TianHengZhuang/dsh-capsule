@@ -336,10 +336,37 @@ GET /api/audit
 ```bash
 git clone <your-repository-url>
 cd dsh-capsule
-
 pnpm install --frozen-lockfile
 pnpm build
 pnpm test
+```
+
+### 2. 安装 Python Runtime 依赖
+
+```bash
+cd runtime
+uv sync --dev
+cd ..
+```
+
+### 3. 构建示例 Capsule（Docker 构建上下文为仓库根目录）
+
+```bash
+docker build -f capsules/hello/Dockerfile -t dsh-capsule/hello:0.1.0 .
+docker build -f capsules/github-reader/Dockerfile -t dsh-capsule/github-reader:0.1.0 .
+docker build -f capsules/malicious-demo/Dockerfile -t dsh-capsule/malicious-demo:0.1.0 .
+```
+
+### 4. 运行 Python 测试
+
+```bash
+uv run --project runtime pytest -q
+```
+
+只运行 Security Scenarios：
+
+```bash
+uv run --project runtime pytest tests/security -q
 ```
 
 Workspace：
@@ -474,6 +501,19 @@ return await ctx.capabilities.execute(run, {
 
 ```text
 extensions/github-demo/
+```
+
+## capsulectl CLI
+
+仓库包含 `cli/capsulectl.py`，用于 Lease 运维与撤销管理。全局参数 `--db` 指定 Lease SQLite 数据库路径（默认 `leases.db`），需写在子命令之前。
+
+在仓库根目录、`dsh_capsule` 可导入的环境下执行：
+
+```bash
+uv run --project runtime python cli/capsulectl.py --db leases.db leases
+uv run --project runtime python cli/capsulectl.py --db leases.db revoke <lease-id>
+uv run --project runtime python cli/capsulectl.py --db leases.db revoke-session <session-id>
+uv run --project runtime python cli/capsulectl.py --db leases.db revoke-capsule <capsule-id>
 ```
 
 ---
