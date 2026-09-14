@@ -4,7 +4,7 @@ import type { ResolvedToolPolicy, PolicyResolver } from "./policy.js";
 import type { LeaseManager } from "./lease-manager.js";
 import type { PendingRegistry } from "./pending.js";
 import type { ScopeResolver } from "./scope-resolver.js";
-import type { ApprovalOutcome, ApprovalRequestLike, CapabilityScope, PreToolDecision, ToolExecutionLike } from "./types.js";
+import type { ApprovalOutcome, ApprovalRequestLike, CapabilityScope, LeaseKind, ManagedCapabilitySource, PreToolDecision, ResolvedManagedCapability, ToolExecutionLike } from "./types.js";
 // 作用：Universal Gate（重构规格第 6 节）——Guard 横切 DSH 原生 Tool Pipeline 的三个 hook：
 // tools/pre-execute（prepend 外层中间件，只接管下游返回 ask 的调用）、approval/request（捕获
 // allowed-once 后签发 Lease）、tools/result（清理 pending + 记录最终结果）。
@@ -15,6 +15,8 @@ export interface UniversalGateDeps {
   leases: LeaseManager;
   pending: PendingRegistry;
   audit: AuditService;
+  /** Phase 2：Managed 语义能力查询（CapabilityService 实现）——已注册 Tool 优先用 provider/resource/action 语义 Scope */
+  managed?: ManagedCapabilitySource;
   /** 可注入时钟（默认 Date.now），保证 TTL/GC 语义可模拟时间测试 */
   now?: () => number;
 }
@@ -64,11 +66,22 @@ export class UniversalGate {
       return downstream;
     }
     let scope: CapabilityScope;
-    try {
-      scope = this.deps.scopes.resolve({ toolName: exec.name, arguments: exec.arguments }, policy);
-    } catch {
-      // Scope 解析失败：Fail Closed，不签发 Lease，保持原 ask
-      return downstream;
+    let ttlSeconds: number;
+    let leaseKind: LeaseKind = "universal";
+    const managed = this.resolveManaged(exec.name, exec.arguments);
+    if (managed) {
+      // 已注册 managed Tool：优先用 provider/resource/action 语义 Scope（规格 10.4），TTL 来自 definition
+      scope = managed.scope;
+      ttlSeconds = managed.ttlSeconds;
+      leaseKind = "managed";
+    } else {
+      try {
+        scope = this.deps.scopes.resolve({ toolName: exec.name, arguments: exec.arguments }, policy);
+      } catch {
+        // Scope 解析失败：Fail Closed，不签发 Lease，保持原 ask
+        return downstream;
+      }
+      ttlSeconds = policy.ttlSeconds;
     }
     const lease = await this.deps.leases.findMatching(sessionId, exec.name, scope.key);
     if (lease) {
@@ -96,14 +109,15 @@ export class UniversalGate {
         sessionId,
         toolName: exec.name,
         scope,
-        ttlSeconds: policy.ttlSeconds,
+        ttlSeconds,
         startedAt: this.now(),
         decision: "ASKED",
+        leaseKind,
       },
       exec.signal,
     );
     this.recordAudit(exec, "ASK", { scopeKey: scope.key, scopeDisplay: scope.display });
-    return { kind: "ask", reason: appendGuardReason(downstream.reason, scope, policy.ttlSeconds) };
+    return { kind: "ask", reason: appendGuardReason(downstream.reason, scope, ttlSeconds) };
   }
   async handleApprovalRequest(req: ApprovalRequestLike, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome> {
     // 作用：approval/request 处理器（规格 6.3 算法）——先交给真正的 DSH human/machine answerer（next），
@@ -124,7 +138,7 @@ export class UniversalGate {
           toolName: pendingExec.toolName,
           scope: pendingExec.scope,
           ttlSeconds: pendingExec.ttlSeconds,
-          kind: "universal",
+          kind: pendingExec.leaseKind ?? "universal",
           sourceCallId: req.callId,
         });
         pendingExec.leaseId = lease.id;
@@ -183,6 +197,16 @@ export class UniversalGate {
       }
       this.deps.pending.clear();
     };
+  }
+  private resolveManaged(toolName: string, args: unknown): ResolvedManagedCapability | undefined {
+    // 作用：查询 managed 语义能力定义（规格 10.4）——未注入 managed 源或 Tool 未注册返回 undefined
+    // （回落 exact-arguments 默认策略）；定义解析抛错 Fail Closed 视为无定义，保持原 ask 不签发
+    if (!this.deps.managed) return undefined;
+    try {
+      return this.deps.managed.resolve(toolName, args);
+    } catch {
+      return undefined;
+    }
   }
   private recordAudit(exec: ToolExecutionLike, decision: AuditDecision, extra?: { scopeKey?: string; scopeDisplay?: string; leaseId?: string }): void {
     // 作用：组装审计事件——只含 Session/callId/Tool 名/Scope 哈希与脱敏 display/Lease id，绝不含参数原文
