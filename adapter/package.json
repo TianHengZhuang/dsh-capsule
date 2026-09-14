@@ -7,7 +7,8 @@
   "types": "dist/index.d.ts",
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "vitest run"
+    "test": "vitest run --exclude src/legacy/**",
+    "test:legacy": "vitest run src/legacy"
   },
   "devDependencies": {
     "@types/node": "^22",

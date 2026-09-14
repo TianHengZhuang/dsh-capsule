@@ -13,7 +13,7 @@ export class PythonRuntime {
   private idSeq = 0;
   constructor(
     private readonly pythonCmd: string = process.env.DSH_CAPSULE_PYTHON ?? (process.platform === "win32" ? "python" : "python3"),
-    private readonly runtimeDir: string = path.resolve(__dirname, "../../runtime"),
+    private readonly runtimeDir: string = path.resolve(__dirname, "../../../runtime"),
   ) {}
   registerHostMethod(method: string, handler: HostHandler): void {
     // 作用：注册宿主侧反向调用方法，供 Python 通过 host.* 请求（如 host.credential.resolve）
