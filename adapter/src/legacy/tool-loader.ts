@@ -1,4 +1,5 @@
-// 作用：把 Runtime 返回的 capsule.list_tools 结果映射为 DSH Tool Registry 所需的 Schema
+// 作用：把 Runtime 返回的 capsule.list_tools 结果映射为 DSH Tool Registry 所需的 Schema（旧 Capsule 模型）
+// 状态：Legacy Isolated Runtime（Phase 0 冻结）——仅供未来 runtime.mode = isolated 可选后端复用。
 export interface CapsuleToolSchema {
   name: string;
   description: string;

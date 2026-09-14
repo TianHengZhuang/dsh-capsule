@@ -1,0 +1,238 @@
+import { beforeEach, describe, expect, it } from "vitest";
+import { AuditService } from "../audit/audit-service.js";
+import { LeaseManager } from "./lease-manager.js";
+import { MemoryLeaseStore } from "./lease-store.js";
+import { PendingRegistry } from "./pending.js";
+import { DEFAULT_UNIVERSAL_POLICY, PolicyResolver, type UniversalPolicyConfig } from "./policy.js";
+import { ScopeResolver } from "./scope-resolver.js";
+import { UniversalGate } from "./universal-gate.js";
+let now = 1_000_000;
+const clock = () => now;
+beforeEach(() => {
+  now = 1_000_000;
+});
+function makeGate(config?: UniversalPolicyConfig) {
+  // 作用：组装被测 UniversalGate 及其依赖（注入可控时钟，规格 22.10 模拟时间用）
+  const audit = new AuditService();
+  const pending = new PendingRegistry();
+  const leases = new LeaseManager(new MemoryLeaseStore(clock), clock);
+  const gate = new UniversalGate({
+    policy: new PolicyResolver(config ?? DEFAULT_UNIVERSAL_POLICY),
+    scopes: new ScopeResolver(),
+    leases,
+    pending,
+    audit,
+    now: clock,
+  });
+  return { gate, leases, pending, audit };
+}
+function execOf(callId: string, args: unknown, sessionId = "s1", name = "github_create_issue") {
+  // 作用：构造最小 ToolExecution 测试桩
+  return { callId, rootCallId: callId, name, arguments: args, agent: { id: sessionId } };
+}
+const ask = () => Promise.resolve({ kind: "ask" as const, reason: "need confirm" });
+const allow = () => Promise.resolve({ kind: "allow" as const });
+const deny = () => Promise.resolve({ kind: "deny" as const });
+async function approveOnce(gate: UniversalGate, callId: string) {
+  // 作用：模拟 DSH answerer 返回 allowed-once 的 approval/request 处理
+  return await gate.handleApprovalRequest({ callId }, async () => "allowed-once" as const);
+}
+describe("UniversalGate tools/pre-execute（规格 22 清单）", () => {
+  it("22.1 原 ALLOW 不受影响：无 Lease、无 pending、无 ASK 审计", async () => {
+    const { gate, pending, audit } = makeGate();
+    const out = await gate.handlePreExecute(execOf("c1", {}), allow);
+    expect(out.kind).toBe("allow");
+    expect(pending.size()).toBe(0);
+    expect(audit.list().some((e) => e.decision === "ASK")).toBe(false);
+    expect(audit.list().some((e) => e.decision === "PASSTHROUGH_ALLOW")).toBe(true);
+  });
+  it("22.2 原 DENY 永远不能被 Lease 覆盖：即使存在有效 Lease 仍 deny", async () => {
+    const { gate } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    await approveOnce(gate, "c1");
+    const out = await gate.handlePreExecute(execOf("c2", { repo: "a/b" }), deny);
+    expect(out.kind).toBe("deny");
+  });
+  it("22.3 ASK + allowed-once 签发 Lease，且 reason 明确包含 Scope/TTL 信息（规格 4.2）", async () => {
+    const { gate, leases } = makeGate();
+    const askOut = await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    expect(askOut.kind).toBe("ask");
+    expect(askOut.reason).toContain("need confirm");
+    expect(askOut.reason).toContain("TTL=60s");
+    expect(askOut.reason).toContain("repo");
+    expect(askOut.reason).toContain("可主动撤销");
+    await approveOnce(gate, "c1");
+    const all = await leases.list();
+    expect(all).toHaveLength(1);
+    expect(all[0].status).toBe("ACTIVE");
+    expect(all[0].sessionId).toBe("s1");
+    expect(all[0].sourceCallId).toBe("c1");
+  });
+  it("22.4/22.5/22.6 rejected/cancelled/unavailable 均不签发 Lease", async () => {
+    for (const outcome of ["rejected", "cancelled", "unavailable"] as const) {
+      const { gate, leases } = makeGate();
+      await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+      const out = await gate.handleApprovalRequest({ callId: "c1" }, async () => outcome);
+      expect(out).toBe(outcome);
+      expect(await leases.list()).toHaveLength(0);
+    }
+  });
+  it("22.7 Lease Reuse：同 Session + 同 Tool + 同 Scope + TTL 内 ask 直接转 allow", async () => {
+    const { gate, audit } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    await approveOnce(gate, "c1");
+    const again = await gate.handlePreExecute(execOf("c2", { repo: "a/b" }), ask);
+    expect(again.kind).toBe("allow");
+    expect(audit.list().some((e) => e.decision === "LEASE_REUSED")).toBe(true);
+  });
+  it("22.8 Session Isolation：Session A 的 Lease 不能被 Session B 复用", async () => {
+    const { gate } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }, "s1"), ask);
+    await approveOnce(gate, "c1");
+    const out = await gate.handlePreExecute(execOf("c2", { repo: "a/b" }, "s2"), ask);
+    expect(out.kind).toBe("ask");
+  });
+  it("22.9 Scope Isolation：exact args 下参数变化重新 Ask", async () => {
+    const { gate } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b", title: "A" }), ask);
+    await approveOnce(gate, "c1");
+    const out = await gate.handlePreExecute(execOf("c2", { repo: "a/b", title: "B" }), ask);
+    expect(out.kind).toBe("ask");
+  });
+  it("22.10 TTL：模拟时间前进超过 TTL 后重新 Ask", async () => {
+    const { gate } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    await approveOnce(gate, "c1");
+    now += 60_001;
+    const out = await gate.handlePreExecute(execOf("c2", { repo: "a/b" }), ask);
+    expect(out.kind).toBe("ask");
+  });
+  it("22.11 Revoke：撤销后下一次重新 Ask", async () => {
+    const { gate, leases } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    await approveOnce(gate, "c1");
+    const [lease] = await leases.list();
+    await leases.revoke(lease.id, "manual");
+    const out = await gate.handlePreExecute(execOf("c2", { repo: "a/b" }), ask);
+    expect(out.kind).toBe("ask");
+  });
+  it("22.12 Parallel Calls：两个并行调用按 callId 隔离，scope/lease 互不串", async () => {
+    const { gate, leases, pending } = makeGate();
+    const outA = await gate.handlePreExecute(execOf("c1", { repo: "a/b", title: "A" }), ask);
+    const outB = await gate.handlePreExecute(execOf("c2", { repo: "a/b", title: "B" }), ask);
+    expect(outA.kind).toBe("ask");
+    expect(outB.kind).toBe("ask");
+    expect(pending.size()).toBe(2);
+    await approveOnce(gate, "c1");
+    await approveOnce(gate, "c2");
+    const all = await leases.list();
+    expect(all).toHaveLength(2);
+    expect(new Set(all.map((l) => l.scope.key)).size).toBe(2);
+    expect(new Set(all.map((l) => l.sourceCallId))).toEqual(new Set(["c1", "c2"]));
+  });
+  it("22.13 Cancellation：approval 取消后 pending 清理且无 Lease", async () => {
+    const { gate, pending, leases } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    await gate.handleApprovalRequest({ callId: "c1" }, async () => "cancelled");
+    expect(pending.size()).toBe(0);
+    expect(await leases.list()).toHaveLength(0);
+  });
+  it("22.14 Canonical JSON：key 顺序不同的参数命中同一 Lease", async () => {
+    const { gate } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b", title: "x" }), ask);
+    await approveOnce(gate, "c1");
+    const out = await gate.handlePreExecute(execOf("c2", { title: "x", repo: "a/b" }), ask);
+    expect(out.kind).toBe("allow");
+  });
+  it("无 agent/session：保持原始 ask，不接管、不签发（Fail Closed，规则 6）", async () => {
+    const { gate, pending, leases } = makeGate();
+    const exec = { callId: "c1", rootCallId: "c1", name: "t", arguments: {} };
+    const out = await gate.handlePreExecute(exec, ask);
+    expect(out.kind).toBe("ask");
+    expect(pending.size()).toBe(0);
+    expect(await leases.list()).toHaveLength(0);
+  });
+  it("Approval next 不被调用场景：非 Guard 管理的 callId 透传且不签发", async () => {
+    const { gate, leases } = makeGate();
+    const out = await gate.handleApprovalRequest({ callId: "unknown" }, async () => "allowed-once");
+    expect(out).toBe("allowed-once");
+    expect(await leases.list()).toHaveLength(0);
+  });
+  it("tools/result：记录 TOOL_SUCCESS 并清理 pending", async () => {
+    const { gate, pending, audit } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    await approveOnce(gate, "c1");
+    gate.handleToolResult(execOf("c1", { repo: "a/b" }), { isError: false });
+    expect(pending.size()).toBe(0);
+    const success = audit.list().find((e) => e.decision === "TOOL_SUCCESS");
+    expect(success).toBeDefined();
+    expect(success?.leaseId).toBeTruthy();
+    expect(success?.scopeKey).toBeTruthy();
+  });
+  it("tools/result：错误结果记录 TOOL_ERROR", async () => {
+    const { gate, audit } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    gate.handleToolResult(execOf("c1", { repo: "a/b" }), { isError: true });
+    expect(audit.list().some((e) => e.decision === "TOOL_ERROR")).toBe(true);
+  });
+  it("AbortSignal：调用取消时 pending 立即清理（规格 6.5）", async () => {
+    const { gate, pending } = makeGate();
+    const controller = new AbortController();
+    const exec = { callId: "c1", rootCallId: "c1", name: "t", arguments: {}, agent: { id: "s1" }, signal: controller.signal };
+    await gate.handlePreExecute(exec, ask);
+    expect(pending.size()).toBe(1);
+    controller.abort();
+    expect(pending.size()).toBe(0);
+  });
+  it("pending 超龄兜底 GC（MAX_PENDING_AGE_MS=10min，规格 6.5）", async () => {
+    const { gate, pending } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    expect(pending.size()).toBe(1);
+    now += 10 * 60 * 1000 + 1;
+    await gate.handlePreExecute(execOf("c2", { repo: "x/y" }), ask);
+    expect(pending.size()).toBe(1);
+  });
+  it("fields 策略端到端：配置 paths 后仅指定字段参与复用", async () => {
+    const { gate } = makeGate({
+      ...DEFAULT_UNIVERSAL_POLICY,
+      rules: [{ match: "github_create_issue", scope: { mode: "fields", paths: ["repo"] } }],
+    });
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b", title: "A" }), ask);
+    await approveOnce(gate, "c1");
+    const out = await gate.handlePreExecute(execOf("c2", { repo: "a/b", title: "B" }), ask);
+    expect(out.kind).toBe("allow");
+    const otherRepo = await gate.handlePreExecute(execOf("c3", { repo: "other/r", title: "A" }), ask);
+    expect(otherRepo.kind).toBe("ask");
+  });
+  it("规则 disabled 的 Tool：ask 原样透传不接管", async () => {
+    const { gate, pending } = makeGate({
+      ...DEFAULT_UNIVERSAL_POLICY,
+      rules: [{ match: "github_create_issue", enabled: false }],
+    });
+    const out = await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    expect(out.kind).toBe("ask");
+    expect(out.reason).toBe("need confirm");
+    expect(pending.size()).toBe(0);
+  });
+  it("install：注册三个 hook（前两个 prepend）且 dispose 正常", () => {
+    const { gate, pending } = makeGate();
+    const registrations: { event: string; options?: { prepend?: boolean } }[] = [];
+    const disposers: (() => void)[] = [];
+    const bus = {
+      on: (event: string, _handler: unknown, options?: { prepend?: boolean }) => {
+        registrations.push({ event, options });
+        const disposer = () => {};
+        disposers.push(disposer);
+        return disposer;
+      },
+    };
+    const dispose = gate.install(bus as never);
+    expect(registrations.map((r) => r.event)).toEqual(["tools/pre-execute", "approval/request", "tools/result"]);
+    expect(registrations[0].options).toEqual({ prepend: true });
+    expect(registrations[1].options).toEqual({ prepend: true });
+    expect(registrations[2].options).toBeUndefined();
+    expect(disposers).toHaveLength(3);
+    expect(() => dispose()).not.toThrow();
+    expect(pending.size()).toBe(0);
+  });
+});

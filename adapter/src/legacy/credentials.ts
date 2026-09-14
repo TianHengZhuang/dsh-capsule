@@ -1,9 +1,10 @@
 import type { HostHandler } from "./rpc-client.js";
-// 作用：DSH Credentials 集成（规格第 23/33 节）——真实 Secret 只在可信侧解析后经 RPC 返回 Python Runtime，
+// 作用：DSH Credentials 集成（旧 Capsule 模型）——真实 Secret 只在可信侧解析后经 RPC 返回 Python Runtime，
 // 禁止打印、记录或写入任何持久化介质；Python 侧每次 operation 重新 resolve，不跨 operation 缓存。
+// 状态：Legacy Isolated Runtime（Phase 0 冻结）——新 Guard Broker（Phase 3）将在 TS 侧直接调用 ctx.credentials。
 export interface DshCredentialService {
-  // TODO(Phase 4, 规则 15)：DSH ctx.credentials 的确切形状以当前安装版本官方 TypeScript 类型定义与官方文档为准，
-  // 本接口仅按技术规格第 33 节声明 resolve(ref)；接入真实 DSH 时需核对其返回值结构。
+  // TODO(规则 4)：DSH ctx.credentials 的确切形状以当前安装版本官方 TypeScript 类型定义与官方文档为准，
+  // 本接口仅按旧规格第 33 节声明 resolve(ref)；接入真实 DSH 时需核对其返回值结构。
   resolve(ref: string): Promise<unknown>;
 }
 export function getCredentialService(ctx: Record<string, unknown>): DshCredentialService | undefined {

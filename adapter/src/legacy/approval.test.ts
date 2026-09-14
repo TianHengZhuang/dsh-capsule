@@ -6,7 +6,7 @@ function approvalReturning(result: unknown): { service: DshApprovalService; call
   const calls: any[] = [];
   return { calls, service: { request: async (req: any) => { calls.push(req); return result; } } };
 }
-describe("createLeaseApprovalHandler", () => {
+describe("createLeaseApprovalHandler (legacy)", () => {
   it("allowed-once 决策放行并回传 decision，reason 含完整授权信息", async () => {
     const { service, calls } = approvalReturning("allowed-once");
     await expect(createLeaseApprovalHandler(() => service)({ ...baseReq })).resolves.toEqual({ decision: "allowed-once" });
@@ -15,7 +15,7 @@ describe("createLeaseApprovalHandler", () => {
     expect(calls[0].reason).toContain("repo:foo/bar");
     expect(calls[0].reason).toContain("600");
   });
-  it("对象形 decision=allowed-once 同样放行（规则 15：以实际 DSH 返回形状为准）", async () => {
+  it("对象形 decision=allowed-once 同样放行（规则 4：以实际 DSH 返回形状为准）", async () => {
     const { service } = approvalReturning({ decision: "allowed-once" });
     await expect(createLeaseApprovalHandler(() => service)({ ...baseReq })).resolves.toEqual({ decision: "allowed-once" });
   });
@@ -38,7 +38,7 @@ describe("createLeaseApprovalHandler", () => {
     await expect(handler(null)).rejects.toThrow("LEASE_REJECTED");
   });
 });
-describe("getApprovalService", () => {
+describe("getApprovalService (legacy)", () => {
   it("从 ctx 定位 approval 服务", () => {
     expect(getApprovalService({ approval: { request: async () => "allowed-once" } })).toBeDefined();
   });

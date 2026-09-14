@@ -45,6 +45,9 @@
 > [!IMPORTANT]
 > **当前状态：**隔离 Runtime、Capsule 生命周期、Capability Broker、Capability Lease、GitHub Provider、Python SDK、CLI 与安全测试框架已经实现。DSH Adapter 中自动完成 `capsule.list_tools → ctx.tools.register()` 的 Tool 注册链路仍在接入，因此当前版本定位为 **MVP / Developer Preview**，不宣称已经达到生产级成熟度。
 
+> [!WARNING]
+> **Legacy Isolated Runtime（已冻结）：**项目正按《DSH Capability Guard 重构规格》进行增量重构。上文的 Docker 隔离式 Runtime（`runtime/`、`capsules/`、`sdk/python/`、`cli/` 与 `adapter/src/legacy/`）现为 **Legacy Isolated Runtime**——代码保留、测试可独立运行，但**不在默认启动链中**（默认 Guard Plugin 不 spawn Python、不依赖 Docker / Unix Domain Socket，Windows / macOS / Linux 均可运行）。默认主链路为纯 TypeScript 的 Universal Short-lived Authorization（Lease 签发 / 复用 / 过期 / 撤销 / 审计）；Legacy Runtime 将在 Roadmap Phase 5 作为 `runtime.mode = isolated` 可选后端接回，用于需要恶意代码强隔离保证的场景。
+
 ---
 
 ## ✦ 为什么需要 DSH Capsule？
