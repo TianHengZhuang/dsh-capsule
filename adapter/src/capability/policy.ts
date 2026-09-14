@@ -70,8 +70,8 @@ export class PolicyResolver {
     if (typeof rule.match !== "string" || rule.match.length === 0) {
       throw new GuardError("LEASE_POLICY_INVALID", "rule.match must be a non-empty string");
     }
-    if (rule.ttlSeconds !== undefined && (!Number.isInteger(rule.ttlSeconds) || rule.ttlSeconds <= 0 || rule.ttlSeconds > this.config.maxTtlSeconds)) {
-      throw new GuardError("LEASE_POLICY_INVALID", `rule ${rule.match} ttlSeconds must be in (0, maxTtlSeconds]`);
+    if (rule.ttlSeconds !== undefined && (!Number.isInteger(rule.ttlSeconds) || rule.ttlSeconds <= 0)) {
+      throw new GuardError("LEASE_POLICY_INVALID", `rule ${rule.match} ttlSeconds must be a positive integer`);
     }
     if (rule.scope !== undefined) {
       if (rule.scope.mode === "fields") {

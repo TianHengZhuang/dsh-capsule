@@ -187,7 +187,7 @@ describe("CapabilityService execute 双重校验（规格 10.5 / 23.1-23.8）", 
     const scope = service.resolve(githubDefinition.toolName, { repo: "a/b" })!.scope;
     await leases.issue({ sessionId: "s1", toolName: githubDefinition.toolName, scope, ttlSeconds: 120, kind: "managed" });
     const controller = new AbortController();
-    const out = await service.execute(runOf("c1", { repo: "a/b" }, "s1"), { ...operationOf(), input: { title: "T" } });
+    const out = await service.execute({ ...runOf("c1", { repo: "a/b" }, "s1"), signal: controller.signal }, { ...operationOf(), input: { title: "T" } });
     expect(out).toEqual({ ok: true, number: 42 });
     expect(calls).toHaveLength(1);
     expect(calls[0].operation).toEqual({ provider: "github", resource: "repo:a/b", action: "issues.create", input: { title: "T" } });

@@ -68,7 +68,14 @@ export class UniversalGate {
     let scope: CapabilityScope;
     let ttlSeconds: number;
     let leaseKind: LeaseKind = "universal";
-    const managed = this.resolveManaged(exec.name, exec.arguments);
+    let managed: ResolvedManagedCapability | undefined;
+    try {
+      managed = this.resolveManaged(exec.name, exec.arguments);
+    } catch {
+      // 已注册 managed 定义但 resource 计算失败：禁止回落 universal exact-arguments 链路签发
+      // 语义错误的 Lease（规格 10.4），Fail Closed 保持下游原始 ask——Guard 完全不接管本次调用
+      return downstream;
+    }
     if (managed) {
       // 已注册 managed Tool：优先用 provider/resource/action 语义 Scope（规格 10.4），TTL 来自 definition
       scope = managed.scope;
@@ -200,13 +207,10 @@ export class UniversalGate {
   }
   private resolveManaged(toolName: string, args: unknown): ResolvedManagedCapability | undefined {
     // 作用：查询 managed 语义能力定义（规格 10.4）——未注入 managed 源或 Tool 未注册返回 undefined
-    // （回落 exact-arguments 默认策略）；定义解析抛错 Fail Closed 视为无定义，保持原 ask 不签发
+    //（回落 exact-arguments 默认策略）；定义存在但 resource 解析抛错则向上传播，由 handlePreExecute
+    // Fail Closed 不接管保持原 ask（禁止回落 universal 签发语义错误的 Lease）
     if (!this.deps.managed) return undefined;
-    try {
-      return this.deps.managed.resolve(toolName, args);
-    } catch {
-      return undefined;
-    }
+    return this.deps.managed.resolve(toolName, args);
   }
   private recordAudit(exec: ToolExecutionLike, decision: AuditDecision, extra?: { scopeKey?: string; scopeDisplay?: string; leaseId?: string }): void {
     // 作用：组装审计事件——只含 Session/callId/Tool 名/Scope 哈希与脱敏 display/Lease id，绝不含参数原文

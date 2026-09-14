@@ -54,8 +54,11 @@ describe("LeaseManager + MemoryLeaseStore", () => {
     await manager.issue({ sessionId: "s2", toolName: "t1", scope: scopeOf("a"), ttlSeconds: 60 });
     expect(await manager.revokeSession("s1", "session disposed")).toBe(2);
     const remaining = await manager.list();
-    expect(remaining).toHaveLength(1);
-    expect(remaining[0].sessionId).toBe("s2");
+    expect(remaining).toHaveLength(3);
+    const revoked = remaining.filter((lease) => lease.sessionId === "s1");
+    expect(revoked).toHaveLength(2);
+    expect(revoked.every((lease) => lease.status === "REVOKED" && lease.revokeReason === "session disposed")).toBe(true);
+    expect(remaining.find((lease) => lease.sessionId === "s2")?.status).toBe("ACTIVE");
   });
   it("issue 参数非法抛错（Fail Closed）", async () => {
     const manager = new LeaseManager(new MemoryLeaseStore());
@@ -79,7 +82,7 @@ describe("LeaseManager + MemoryLeaseStore", () => {
     const store = new MemoryLeaseStore(clock);
     const manager = new LeaseManager(store, clock);
     await manager.issue({ sessionId: "s1", toolName: "t", scope: scopeOf(), ttlSeconds: 60 });
-    now += 3_600_001;
+    now += 60_000 + 3_600_001;
     expect(store.gc(now)).toBe(1);
     expect(await manager.list()).toHaveLength(0);
   });
