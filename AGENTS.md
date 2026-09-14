@@ -2,7 +2,7 @@
 
 > 本文件是 dsh-capsule 项目的"项目宪法"，所有 AI 编码会话开始前必须通读并遵守。
 > 当前有效规格：`docs/DSH_Capability_Guard_基于现有版本重构技术规格.md`（增量重构，以其为准）。
-> 旧规格 `docs/DSH_Capsule_MVP_Technical_Spec.md` 仅约束 Legacy Docker Runtime 冻结层，不再约束新主链路。
+> 项目决策（2026-09-14，项目所有者确认）：**Legacy Python / Docker Isolated Runtime 已整体移除，不再预留、后续不实现**。规格中涉及 Legacy 保留 / Phase 5 Optional Isolated Runtime 的条款随之作废；本插件为纯 TypeScript，无 Python / Docker / UDS 依赖。
 
 ## 1. 项目一句话定位
 
@@ -22,8 +22,8 @@ DSH Capability Guard（TS 插件，横切）
    └── Broker（Lease 校验 → ctx.credentials.resolve → Provider → External API）
 ```
 
-- Legacy 层（旧 Python Runtime + Docker Capsule + UDS）：保留不删除，但**不得进入默认启动链**，作为未来 `runtime.mode = isolated` 可选后端。
-- V1/V2 默认路径禁止：spawn Python、依赖 Docker、使用 Unix Domain Socket。
+- Legacy 层（旧 Python Runtime + Docker Capsule + UDS）：**已按项目决策整体移除**，禁止以任何理由恢复（无 `runtime.mode = isolated`，无 Phase 5）。
+- 全部路径禁止：spawn Python、依赖 Docker、使用 Unix Domain Socket。
 - Provider 是 Trusted Code，由 Guard Core 内置/审核；Managed Extension **不得**注册可获得 Secret 的 Provider。
 - Managed Extension 通过 `ctx.capabilities.execute(run, operation)` 拿业务结果；项目标准禁止 Extension `inject credentials` 直接 `ctx.credentials.resolve`。
 
@@ -35,16 +35,15 @@ DSH Capability Guard（TS 插件，横切）
 
 ## 4. 技术栈与依赖
 
-- 新主链路：TypeScript + 当前 DSH/Cordis 版本（Service / events / waterfall 中间件）。
+- 主链路：TypeScript + 当前 DSH/Cordis 版本（Service / events / waterfall 中间件）。
 - 新增 SDK：`sdk/typescript/`（`@dsh-capsule/extension-sdk`，第一版只有类型与 helper；禁止在 SDK 复制 Lease/Broker/Credential 逻辑——这些只存在于 Guard Core）。
-- Legacy 层依赖冻结现状：Python 3.11+（pydantic / pyyaml / docker / httpx / aiosqlite）。
-- 依赖管理：pnpm workspaces；Python 用 uv（`pyproject.toml`）。
-- V1 默认路径禁止依赖：docker、python、unix socket、chmod、UID/GID、`/run/*`、Linux capability。
+- 依赖管理：pnpm workspaces（无 Python 依赖，不再使用 uv）。
+- 任何路径禁止依赖：docker、python、unix socket、chmod、UID/GID、`/run/*`、Linux capability。
 
 ## 5. 强制实现规则（重构规格 MUST/MUST NOT 逐条遵守）
 
 1. 基于现有仓库增量重构，禁止另起炉灶；动手前先跑现有 TypeScript 测试确认基线。
-2. 不得删除 `runtime/`、`capsules/`、`sdk/python/`、`cli/`（Legacy 冻结保留）。
+2. Legacy Python / Docker Runtime 已按项目决策移除（2026-09-14），禁止恢复；新增代码一律纯 TypeScript。
 3. 不修改 DSH Core 源码，以独立 DSH Plugin 接入。
 4. DSH API（`tools/pre-execute`、`approval/request`、`tools/result`、Cordis Service、`ctx.credentials`）以当前安装版本 TypeScript 类型定义为准，禁止凭猜测硬编码（规格第 34 节校验基线，2026-09-14）。
 5. Universal V1 默认路径不得 spawn Python、不得依赖 Docker。
@@ -68,35 +67,33 @@ DSH Capability Guard（TS 插件，横切）
 3. **Phase 2**：Managed Capability Service（`ctx.capabilities` register / execute / 语义 Scope）。
 4. **Phase 3**：Credential Broker（ProviderRegistry + GitHubProvider + per-operation resolve + 双重校验）。
 5. **Phase 4**：Governance Console / Observability。
-6. **Phase 5**：Optional Isolated Runtime（接回旧 Python/Docker 作为可选后端）。
+6. ~~**Phase 5**：Optional Isolated Runtime~~（已作废：Legacy Python/Docker 层按项目决策移除，不再实现）。
 
-第一轮实现只做 Phase 0 + Phase 1（规格第 32 节），验收通过后再交下一轮。
+Phase 0–4 已全部完成；规格后续以"接入真实 DSH/Cordis API 联调基线（第 34 节）+ extensions/github-demo"为下一步。
 
 ## 7. 目录结构（新增模块必须归位）
 
 ```text
 adapter/src/
-├── index.ts                 # Guard Plugin 入口（不再 spawn Python）
+├── index.ts                 # Guard Plugin 入口（纯 TypeScript）
 ├── capability/              # types / canonical / scope-resolver / policy / lease-store / lease-manager / pending / universal-gate
 ├── service/                 # capability-service.ts（ctx.capabilities）
 ├── broker/                  # errors / provider / registry / broker / providers/github.ts
-├── audit/                   # types / audit-service
-└── legacy/                  # 旧 rpc-client / approval / credentials / tool-loader（冻结）
+└── audit/                   # types / audit-service
 sdk/typescript/              # @dsh-capsule/extension-sdk
 extensions/github-demo/      # Managed Extension 示例
-runtime/ capsules/ sdk/python/ cli/   # Legacy 冻结，不删除
 ```
 
 ## 8. 安全声明边界（README / 注释不得混淆）
 
 - Universal Mode 可声明：短期授权、Session/Scope 绑定、TTL、撤销、审计、零改造集成；**不得**声明"第三方插件看不到 Credential / 无法绕过 Broker / 网络被隔离"。
 - Managed Broker Mode 可声明：按 Guard SDK 编写的 Tool 不直接解析 Credential、Broker 统一执行 Provider Operation；它是 Architectural Contract，不是 OS 强隔离边界，文档必须如实说明。
-- 需要恶意代码强隔离保证时启用 Legacy Container Runtime（Phase 5）。
+- 本项目不再提供任何 OS 级强隔离后端（Legacy Container Runtime 已移除）；需要强隔离的场景由 DSH 原生 Sandbox 或外部机制负责。
 
 ## 9. 测试与跨平台
 
 - 新 TS 测试位于 `adapter/src/capability/*.test.ts`，必须覆盖规格第 22 节 V1 清单（原 allow/deny 不受影响、deny 不可被 Lease 覆盖、Lease 复用、Session/Scope 隔离、TTL、revoke、并行 callId 隔离、取消清理、canonical JSON 哈希稳定）与第 23 节 V2 清单（15 项）。
-- CI 必须在 ubuntu / windows / macos 三平台跑 build + test；旧 Docker 测试只在 Linux optional job。
+- CI 必须在 ubuntu / windows / macos 三平台跑 build + test（纯 TS，无 Python/Docker job）。
 - 安全相关代码必须配负向测试（rejected / cancelled / unavailable 不签发、mismatch 拒绝、Secret 不入日志）。
 
 ## 10. 开发纪律

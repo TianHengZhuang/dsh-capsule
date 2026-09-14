@@ -5,9 +5,8 @@
 <p align="center">
   <a href="#-deepseek-harness-插件"><img src="https://img.shields.io/badge/DeepSeek_Harness-Plugin-4F6BFF?style=for-the-badge" alt="DeepSeek Harness Plugin" /></a>
   <a href="#-deepseek-harness-插件"><img src="https://img.shields.io/badge/DSH-Plugin-6D5AE6?style=for-the-badge" alt="DSH Plugin" /></a>
-  <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white" alt="Python 3.11+" />
   <img src="https://img.shields.io/badge/TypeScript-5.x-3178C6?style=for-the-badge&logo=typescript&logoColor=white" alt="TypeScript" />
-  <img src="https://img.shields.io/badge/Docker-required-2496ED?style=for-the-badge&logo=docker&logoColor=white" alt="Docker" />
+  <img src="https://img.shields.io/badge/No_Runtime_Deps-pure_TS-22C55E?style=for-the-badge" alt="Pure TypeScript" />
   <img src="https://img.shields.io/badge/License-MIT-22C55E?style=for-the-badge" alt="MIT License" />
 </p>
 
@@ -16,8 +15,8 @@
 </p>
 
 <p align="center">
-  <b>DSH Capsule</b> 是面向 <b>DeepSeek Harness</b> 的隔离式第三方 Tool Plugin Runtime。<br/>
-  插件代码运行在受限 Docker Capsule 中；所有外部能力由可信宿主通过短期、Session 绑定、可撤销的 Capability Lease 进行代理授权。
+  <b>DSH Capability Guard</b> 是面向 <b>DeepSeek Harness</b> 的通用 Tool 短期授权 + Managed Extension Broker 插件。<br/>
+  任何原本触发 DSH Approval 的已装插件零代码改造即获得短期、Session 绑定、可撤销的 Capability Lease；遵循 Guard 标准开发的 Managed Extension 进一步由 Broker 代解析凭证与调用 Provider。
 </p>
 
 <p align="center">
@@ -40,19 +39,18 @@
 
 > **DSH Capsule 以独立 DeepSeek Harness Plugin 的形式工作，不修改 DeepSeek Harness Core。**
 
-面向 DSH 的 TypeScript Adapter 被刻意保持得很薄，只负责生命周期接入、审批、凭证解析和双向 RPC；真正与安全相关的执行逻辑全部下沉到独立的 Python Runtime，使 Agent 进程与第三方插件执行环境彻底解耦。
+Guard 以横切方式接入 DSH 原生 Tool Pipeline（`tools/pre-execute` / `approval/request` / `tools/result` 三个 hook），只增强而不替代 DSH 原生 Approval / Credentials / Sandbox；全部核心逻辑为纯 TypeScript，无任何外部 Runtime 依赖。
 
 > [!IMPORTANT]
-> **当前状态：**隔离 Runtime、Capsule 生命周期、Capability Broker、Capability Lease、GitHub Provider、Python SDK、CLI 与安全测试框架已经实现。DSH Adapter 中自动完成 `capsule.list_tools → ctx.tools.register()` 的 Tool 注册链路仍在接入，因此当前版本定位为 **MVP / Developer Preview**，不宣称已经达到生产级成熟度。
+> **当前状态：**《DSH Capability Guard 重构规格》Phase 0–4 已完成——Universal 短期授权（Lease 签发 / 复用 / 过期 / 撤销 / 审计）、Managed Capability Service、Credential Broker（GitHub Provider）与 Governance Console 均已实现。接入真实 DSH/Cordis API 的联调基线尚未完成（规则 4：以当前安装版本的 TypeScript 类型定义为准），因此当前版本定位为 **Developer Preview**。
 
 > [!WARNING]
-> **Legacy Isolated Runtime（默认冻结，可选接回）：**项目正按《DSH Capability Guard 重构规格》进行增量重构。上文的 Docker 隔离式 Runtime（`runtime/`、`capsules/`、`sdk/python/`、`cli/` 与 `adapter/src/legacy/`）现为 **Legacy Isolated Runtime**——代码保留、测试可独立运行，但**不在默认启动链中**（默认 Guard Plugin 不 spawn Python、不依赖 Docker / Unix Domain Socket，Windows / macOS / Linux 均可运行）。默认主链路为纯 TypeScript 的 Universal Short-lived Authorization（Lease 签发 / 复用 / 过期 / 撤销 / 审计）；Phase 5 已将其作为 `runtime.mode = isolated` 可选后端接回（默认不启用，显式 opt-in 才 spawn Python），用于需要恶意代码强隔离保证的场景。
+> **Legacy Isolated Runtime（已移除）：**旧的 Docker 隔离式 Runtime（`runtime/`、`capsules/`、`sdk/python/`、`cli/` 与 `adapter/src/legacy/`）已按项目决策**整体移除、不再预留**——本插件不再有任何 Python / Docker / Unix Domain Socket 依赖，Windows / macOS / Linux 纯 TypeScript 运行。下文涉及 Docker Capsule / Python Runtime / Capsule SDK 的章节为**历史文档**，仅描述移除前的设计，不再对应仓库现状。
 
 > [!TIP]
-> **DSH Capability Guard（新默认主链路）：**纯 TypeScript 实现的 Universal 短期授权（Phase 1）、Managed Capability Service（Phase 2）、Credential Broker（Phase 3）、Governance Console（Phase 4）与 Optional Isolated Runtime（Phase 5）已完成。Console 提供两个只读观测入口：
+> **DSH Capability Guard（默认主链路）：**纯 TypeScript 实现的 Universal 短期授权（Phase 1）、Managed Capability Service（Phase 2）、Credential Broker（Phase 3）与 Governance Console（Phase 4）。Console 提供两个只读观测入口：
 > - **编程 API**：`GovernanceConsole.snapshot()` / `queryAudit()`（插件内直接聚合 Lease / Capability / Provider / Audit / Tool 统计五维视图）；
 > - **本地 HTTP 查看器**：插件配置 `console: { enabled: true, host: "127.0.0.1", port: 8787 }` 启动，仅监听 loopback、仅接受 GET（`/` 页面、`/api/snapshot`、`/api/audit`），响应带 `no-store` / `nosniff` / CSP；默认关闭（不开任何端口）。Console 数据全部为白名单投影——不含 Secret、原始 Tool Arguments 与 Credential（引用名 `credentialRef` 除外，它不是 Secret）。
-> - **Optional Isolated Runtime（Phase 5）**：插件配置 `runtime: { mode: "isolated" }` 显式 opt-in 后，`IsolatedRuntimeManager` 会 spawn Legacy Python Runtime 并提供 Docker Capsule 工具枚举（`listTools()`）与容器内调用（`invoke(tool, args, sessionId)`）；宿主反向链路复用冻结实现（Approval 仅 `allowed-once` 放行、Credential per-operation resolve 且错误不携带 Secret）。启动失败一律 Fail Closed 抛 `ISOLATED_RUNTIME_FAILED`，不静默降级回纯 TS 路径。
 
 
 ---

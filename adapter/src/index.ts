@@ -11,22 +11,18 @@ import { UniversalGate } from "./capability/universal-gate.js";
 import { GovernanceConsole } from "./console/console-service.js";
 import { startConsoleServer, type ConsoleHttpHandle } from "./console/http-server.js";
 import type { ConsoleHttpConfig } from "./console/types.js";
-import { DEFAULT_ISOLATED_INVOKE_TIMEOUT_MS, IsolatedRuntimeManager, type IsolatedRuntimeConfig } from "./isolated/isolated-runtime.js";
 import { CapabilityService } from "./service/capability-service.js";
 export type CapsuleHostContext = Record<string, unknown>;
 export type DisposeHook = () => void | Promise<void>;
-export { AuditService, CapabilityService, CredentialBroker, GitHubProvider, GovernanceConsole, IsolatedRuntimeManager, LeaseManager, MemoryLeaseStore, PendingRegistry, PolicyResolver, ProviderRegistry, ScopeResolver, UniversalGate, startConsoleServer, DEFAULT_UNIVERSAL_POLICY, DEFAULT_BROKER_TIMEOUT_MS, DEFAULT_ISOLATED_INVOKE_TIMEOUT_MS, findCredentialService };
-export type { UniversalPolicyConfig, CredentialServiceLike, BrokerDeps, ConsoleHttpConfig, IsolatedRuntimeConfig };
+export { AuditService, CapabilityService, CredentialBroker, GitHubProvider, GovernanceConsole, LeaseManager, MemoryLeaseStore, PendingRegistry, PolicyResolver, ProviderRegistry, ScopeResolver, UniversalGate, startConsoleServer, DEFAULT_UNIVERSAL_POLICY, DEFAULT_BROKER_TIMEOUT_MS, findCredentialService };
+export type { UniversalPolicyConfig, CredentialServiceLike, BrokerDeps, ConsoleHttpConfig };
 // 作用：Guard 插件完整配置——策略项（Partial<UniversalPolicyConfig>）+ Phase 4 Governance Console
-// 本地只读查看器开关（默认关闭：仅提供编程 API，不监听任何端口）+ Phase 5 Optional Isolated Runtime
-//（默认 native 纯 TS 路径不 spawn Python、不依赖 Docker；仅 runtime.mode = "isolated" 显式 opt-in）。
+// 本地只读查看器开关（默认关闭：仅提供编程 API，不监听任何端口）。
 export interface GuardPluginConfig extends Partial<UniversalPolicyConfig> {
   console?: ConsoleHttpConfig;
-  runtime?: IsolatedRuntimeConfig;
 }
 // 作用：DSH Guard 插件入口（重构规格第 16 节）——纯 TypeScript 挂载 Universal Gate 三个 hook；
-// 默认路径不 spawn Python、不依赖 Docker / Unix Domain Socket（Phase 0 已冻结 Legacy Isolated Runtime，
-// 旧实现保留于 adapter/src/legacy/，规格第 24 节 Phase 5 才作为可选后端接回）。
+// 不 spawn Python、不依赖 Docker / Unix Domain Socket（Legacy Isolated Runtime 已按项目决策移除）。
 export const name = "dsh-capability-guard";
 export const inject = ["tools", "approval"];
 export async function apply(ctx: CapsuleHostContext, config?: GuardPluginConfig): Promise<DisposeHook> {
@@ -63,20 +59,6 @@ export async function apply(ctx: CapsuleHostContext, config?: GuardPluginConfig)
     managed: capabilities,
   });
   const govConsole = new GovernanceConsole({ audit, leases, capabilities, providers: registry, guardName: name });
-  // Phase 5：Optional Isolated Runtime——仅 runtime.mode = "isolated" 显式 opt-in 时接回 Legacy
-  // Python Runtime + Docker Capsule（规格第 24 节 Phase 5 / 第 3.3 节）；放在 hook 安装之前启动，
-  // 失败即抛 ISOLATED_RUNTIME_FAILED（Fail Closed：不静默降级，且此时尚未产生任何 DSH 副作用）；
-  // 默认（无 runtime 配置 / mode 缺省）完全不实例化，纯 TS 路径不 spawn Python、不依赖 Docker。
-  let isolated: IsolatedRuntimeManager | undefined;
-  if (config?.runtime?.mode === "isolated") {
-    isolated = new IsolatedRuntimeManager({
-      pythonCmd: config.runtime.pythonCmd,
-      runtimeDir: config.runtime.runtimeDir,
-      invokeTimeoutMs: config.runtime.invokeTimeoutMs,
-      ctx,
-    });
-    await isolated.start();
-  }
   if (typeof (ctx as { on?: unknown }).on !== "function") {
     throw new Error("GUARD_INSTALL_FAILED: ctx.on unavailable");
   }
@@ -92,9 +74,6 @@ export async function apply(ctx: CapsuleHostContext, config?: GuardPluginConfig)
   return async () => {
     if (consoleHandle) {
       await consoleHandle.close();
-    }
-    if (isolated) {
-      await isolated.dispose();
     }
     dispose();
     delete (ctx as { capabilities?: unknown }).capabilities;
