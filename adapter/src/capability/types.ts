@@ -78,6 +78,14 @@ export interface ManagedCapabilityDefinition {
   resource: (args: unknown) => string;
   ttlSeconds?: number;
 }
+// 作用：Managed 能力定义的安全只读投影（规格第 24 节 Phase 4 治理查询用）——只含语义标识与
+// 生效 TTL，不暴露 resource 函数与任何 Secret，供 GovernanceConsole / listCapabilities 使用。
+export interface ManagedCapabilitySummary {
+  toolName: string;
+  provider: string;
+  action: string;
+  ttlSeconds: number;
+}
 // 作用：Broker Operation（规格第 10.2 节）——Managed Extension 调 ctx.capabilities.execute 时
 // 自报的目标操作；Guard 会用 run.arguments 重算 expected resource 做双重校验（规格 10.5）。
 export interface BrokerOperation {

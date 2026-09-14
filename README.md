@@ -48,6 +48,12 @@
 > [!WARNING]
 > **Legacy Isolated Runtime（已冻结）：**项目正按《DSH Capability Guard 重构规格》进行增量重构。上文的 Docker 隔离式 Runtime（`runtime/`、`capsules/`、`sdk/python/`、`cli/` 与 `adapter/src/legacy/`）现为 **Legacy Isolated Runtime**——代码保留、测试可独立运行，但**不在默认启动链中**（默认 Guard Plugin 不 spawn Python、不依赖 Docker / Unix Domain Socket，Windows / macOS / Linux 均可运行）。默认主链路为纯 TypeScript 的 Universal Short-lived Authorization（Lease 签发 / 复用 / 过期 / 撤销 / 审计）；Legacy Runtime 将在 Roadmap Phase 5 作为 `runtime.mode = isolated` 可选后端接回，用于需要恶意代码强隔离保证的场景。
 
+> [!TIP]
+> **DSH Capability Guard（新默认主链路）：**纯 TypeScript 实现的 Universal 短期授权（Phase 1）、Managed Capability Service（Phase 2）、Credential Broker（Phase 3）与 Governance Console（Phase 4）已完成。Console 提供两个只读观测入口：
+> - **编程 API**：`GovernanceConsole.snapshot()` / `queryAudit()`（插件内直接聚合 Lease / Capability / Provider / Audit / Tool 统计五维视图）；
+> - **本地 HTTP 查看器**：插件配置 `console: { enabled: true, host: "127.0.0.1", port: 8787 }` 启动，仅监听 loopback、仅接受 GET（`/` 页面、`/api/snapshot`、`/api/audit`），响应带 `no-store` / `nosniff` / CSP；默认关闭（不开任何端口）。Console 数据全部为白名单投影——不含 Secret、原始 Tool Arguments 与 Credential（引用名 `credentialRef` 除外，它不是 Secret）。
+
+
 ---
 
 ## ✦ 为什么需要 DSH Capsule？

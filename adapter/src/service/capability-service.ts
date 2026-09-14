@@ -8,6 +8,7 @@ import type {
   JsonValue,
   ManagedCapabilityDefinition,
   ManagedCapabilitySource,
+  ManagedCapabilitySummary,
   ResolvedManagedCapability,
   ToolRunContext,
 } from "../capability/types.js";
@@ -121,6 +122,12 @@ export class CapabilityService implements ManagedCapabilitySource {
   async listLeases(): Promise<readonly CapabilityLease[]> {
     // 作用：列出全部 Lease——代理 LeaseManager（规格 10.2）
     return await this.deps.leases.list();
+  }
+  listCapabilities(): readonly ManagedCapabilitySummary[] {
+    // 作用：列出全部已注册 Managed 能力定义的安全投影（规格第 10.2/24 节治理查询）——只含
+    // toolName/provider/action 与生效 TTL（未指定时回落 defaultTtlSeconds），不暴露 resource 函数
+    // 与任何 Secret，供 GovernanceConsole 聚合展示
+    return [...this.definitions.values()].map((definition) => ({ toolName: definition.toolName, provider: definition.provider, action: definition.action, ttlSeconds: definition.ttlSeconds ?? this.deps.defaultTtlSeconds }));
   }
   private computeResource(definition: ManagedCapabilityDefinition, args: unknown): string {
     // 作用：调用定义的 resource 函数计算资源标识——任何抛错或返回非字符串一律包装为
