@@ -27,6 +27,8 @@ pnpm-debug.log*
 
 # 数据库（Lease SQLite 存于用户目录，不入库）
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 
 # IDE
