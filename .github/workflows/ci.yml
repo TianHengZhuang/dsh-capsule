@@ -1,0 +1,48 @@
+name: CI
+# 作用：CI 基线（重构规格第 9 节 / AGENTS.md）——Guard 主链路（纯 TypeScript）必须在
+# ubuntu / windows / macos 三平台跑 build + test；Legacy Python Runtime + Docker Capsule 测试
+# 只在 Linux optional job 运行（冻结层回归验证，continue-on-error 不阻塞 Guard 主链路验收）。
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  guard-ts:
+    name: Guard TypeScript (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        run: pnpm build
+      - name: Test
+        run: pnpm test
+  legacy-python:
+    name: Legacy Python Runtime (Docker, Linux optional)
+    runs-on: ubuntu-latest
+    # optional job：Legacy 冻结层（runtime/ + capsules/）依赖 Python 与 Docker，仅 Linux 运行；
+    # 失败不阻塞 Guard 主链路（continue-on-error），结果在 Actions 页面独立可见
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v5
+      - name: Sync runtime dependencies
+        run: uv sync --frozen --project runtime
+      - name: Run pytest (unit / integration / security)
+        run: uv run --project runtime --frozen pytest
