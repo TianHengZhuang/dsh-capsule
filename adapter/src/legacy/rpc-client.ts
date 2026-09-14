@@ -4,6 +4,8 @@ import * as path from "node:path";
 export type HostHandler = (params: any) => any;
 type PendingEntry = { resolve: (v: any) => void; reject: (e: Error) => void; timer: NodeJS.Timeout };
 // 作用：管理 Python Capsule Runtime 子进程的完整生命周期与双向 NDJSON JSON-RPC 通信
+// 状态：Legacy Isolated Runtime（Phase 0 冻结）——默认 Guard 插件不再加载本模块，
+// 仅供未来 runtime.mode = isolated 可选后端复用（重构规格第 24 节 Phase 5）。
 export class PythonRuntime {
   private proc: ChildProcess | null = null;
   private pending = new Map<string, PendingEntry>();
@@ -14,7 +16,7 @@ export class PythonRuntime {
     private readonly runtimeDir: string = path.resolve(__dirname, "../../runtime"),
   ) {}
   registerHostMethod(method: string, handler: HostHandler): void {
-    // 作用：注册宿主侧反向调用方法，供 Python 通过 host.* 请求（如 host.credential.resolve，Phase 4 启用）
+    // 作用：注册宿主侧反向调用方法，供 Python 通过 host.* 请求（如 host.credential.resolve）
     this.hostHandlers.set(method, handler);
   }
   async start(): Promise<void> {

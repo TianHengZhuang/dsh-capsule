@@ -5,11 +5,11 @@ function credentialsReturning(result: unknown): DshCredentialService {
   // 作用：构造返回固定结果的假 DSH credentials 服务
   return { resolve: async (_ref: string) => result };
 }
-describe("createCredentialResolveHandler", () => {
+describe("createCredentialResolveHandler (legacy)", () => {
   it("字符串结果包装为 {value} 返回", async () => {
     await expect(createCredentialResolveHandler(() => credentialsReturning(SECRET))({ ref: "GITHUB_TOKEN" })).resolves.toEqual({ value: SECRET });
   });
-  it("对象形 {value} 结果同样支持（规则 15：以实际 DSH 返回形状为准）", async () => {
+  it("对象形 {value} 结果同样支持（规则 4：以实际 DSH 返回形状为准）", async () => {
     await expect(createCredentialResolveHandler(() => credentialsReturning({ value: SECRET }))({ ref: "GITHUB_TOKEN" })).resolves.toEqual({ value: SECRET });
   });
   it("凭据服务不可用即抛 CREDENTIAL_NOT_CONFIGURED（Fail Closed）", async () => {
@@ -30,7 +30,7 @@ describe("createCredentialResolveHandler", () => {
     await expect(handler(null)).rejects.toThrow("CREDENTIAL_NOT_CONFIGURED");
   });
 });
-describe("getCredentialService", () => {
+describe("getCredentialService (legacy)", () => {
   it("从 ctx 定位 credentials 服务", () => {
     expect(getCredentialService({ credentials: { resolve: async () => SECRET } })).toBeDefined();
   });

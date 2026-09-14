@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { PythonRuntime } from "./rpc-client.js";
-describe("PythonRuntime RPC", () => {
+describe("PythonRuntime RPC (legacy)", () => {
   let runtime: PythonRuntime | null = null;
   afterEach(async () => {
     // 作用：每条用例结束后确保子进程被回收，避免泄漏

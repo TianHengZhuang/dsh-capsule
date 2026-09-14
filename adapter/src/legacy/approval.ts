@@ -1,6 +1,8 @@
 import type { HostHandler } from "./rpc-client.js";
-// 作用：DSH Approval 集成（规格第 33 节）——宿主 one-shot Approval 批准的是"签发一张明确 Scope、明确 TTL 的 Lease"，
+// 作用：DSH Approval 集成（旧 Capsule 模型）——宿主 one-shot Approval 批准的是"签发一张明确 Scope、明确 TTL 的 Lease"，
 // 仅接受 allowed-once，其余结果（rejected/cancelled/unavailable）一律拒绝（Fail Closed）。
+// 状态：Legacy Isolated Runtime（Phase 0 冻结）——仅供旧 Python 反向 RPC 链路使用，新 Guard 主链路改用
+// adapter/src/capability/universal-gate.ts 的 approval/request 事件（重构规格第 4.2 节）。
 export interface LeaseApprovalRequest {
   capsuleId: string;
   provider: string;
@@ -10,8 +12,8 @@ export interface LeaseApprovalRequest {
   toolName?: string;
 }
 export interface DshApprovalService {
-  // TODO(Phase 4, 规则 15)：DSH ctx.approval 的确切形状以当前安装版本官方 TypeScript 类型定义与官方文档为准，
-  // 本接口仅按技术规格第 33 节声明 request({ agent, toolName, callId, reason })；接入真实 DSH 时需逐字段核对。
+  // TODO(规则 4)：DSH ctx.approval 的确切形状以当前安装版本官方 TypeScript 类型定义与官方文档为准，
+  // 本接口仅按旧规格第 33 节声明 request({ agent, toolName, callId, reason })；接入真实 DSH 时需逐字段核对。
   request(req: { agent?: unknown; toolName?: string; callId?: unknown; reason?: string }): Promise<unknown>;
 }
 export function getApprovalService(ctx: Record<string, unknown>): DshApprovalService | undefined {
