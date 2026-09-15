@@ -1,4 +1,6 @@
 packages:
   - adapter
+  - sdk/typescript
+  - extensions/github-demo
 allowBuilds:
   esbuild: true

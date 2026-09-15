@@ -2,6 +2,7 @@ import { AuditService } from "./audit/audit-service.js";
 import { CredentialBroker, DEFAULT_BROKER_TIMEOUT_MS, findCredentialService, type BrokerDeps, type CredentialServiceLike } from "./broker/broker.js";
 import { GitHubProvider } from "./broker/providers/github.js";
 import { ProviderRegistry } from "./broker/registry.js";
+import { sha256Scope } from "./capability/canonical.js";
 import { LeaseManager } from "./capability/lease-manager.js";
 import { MemoryLeaseStore } from "./capability/lease-store.js";
 import { PendingRegistry } from "./capability/pending.js";
@@ -14,7 +15,7 @@ import type { ConsoleHttpConfig } from "./console/types.js";
 import { CapabilityService } from "./service/capability-service.js";
 export type CapsuleHostContext = Record<string, unknown>;
 export type DisposeHook = () => void | Promise<void>;
-export { AuditService, CapabilityService, CredentialBroker, GitHubProvider, GovernanceConsole, LeaseManager, MemoryLeaseStore, PendingRegistry, PolicyResolver, ProviderRegistry, ScopeResolver, UniversalGate, startConsoleServer, DEFAULT_UNIVERSAL_POLICY, DEFAULT_BROKER_TIMEOUT_MS, findCredentialService };
+export { AuditService, CapabilityService, CredentialBroker, GitHubProvider, GovernanceConsole, LeaseManager, MemoryLeaseStore, PendingRegistry, PolicyResolver, ProviderRegistry, ScopeResolver, UniversalGate, startConsoleServer, DEFAULT_UNIVERSAL_POLICY, DEFAULT_BROKER_TIMEOUT_MS, findCredentialService, sha256Scope };
 export type { UniversalPolicyConfig, CredentialServiceLike, BrokerDeps, ConsoleHttpConfig };
 // 作用：Guard 插件完整配置——策略项（Partial<UniversalPolicyConfig>）+ Phase 4 Governance Console
 // 本地只读查看器开关（默认关闭：仅提供编程 API，不监听任何端口）。
