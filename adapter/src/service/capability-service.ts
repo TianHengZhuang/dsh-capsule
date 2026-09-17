@@ -1,3 +1,4 @@
+import { Service, type Context } from "@deepseek-ai/cordis";
 import { sha256Scope } from "../capability/canonical.js";
 import { GuardError } from "../capability/errors.js";
 import type { LeaseManager } from "../capability/lease-manager.js";
@@ -12,11 +13,8 @@ import type {
   ResolvedManagedCapability,
   ToolRunContext,
 } from "../capability/types.js";
-// 作用：CapabilityService（重构规格第 10 节，Phase 2）——对 Managed Extension 暴露 ctx.capabilities：
-// register() 注册语义能力定义、execute() 执行 Broker 双重校验 + Lease 验证、revoke/revokeSession/
-// listLeases 代理 LeaseManager。Provider 实际调用在 Phase 3 由 Broker 注入 executor，Phase 2 未注入时
-// 校验通过即 Fail Closed 抛 PROVIDER_NOT_FOUND。身份一律取 run.agent.id（可信 Tool Runtime 产生，
-// 规格 10.3 禁止 Extension 自报 Session）。
+// 作用：Provider 实际调用在 Phase 3 由 Broker 注入 executor，未注入时校验通过即 Fail Closed 抛
+// PROVIDER_NOT_FOUND（见下方类注释）。
 export interface BrokerOperationExecutor {
   // 作用：Phase 3 Broker 将实现的 Provider 执行接口——真正解析 Credential 并调用 External API；
   // Phase 2 仅作为注入点，未注入时 execute 拒绝（Fail Closed）
@@ -32,9 +30,35 @@ export interface CapabilityServiceDeps {
   executor?: BrokerOperationExecutor;
 }
 const RESOURCE_DISPLAY_MAX_LENGTH = 160;
-export class CapabilityService implements ManagedCapabilitySource {
+/** Managed Extension 通过 `inject: ["capabilities"]` 依赖的服务名——与 `super(ctx, "capabilities")` 必须一致。 */
+export const CAPABILITIES_SERVICE_NAME = "capabilities";
+// 作用：CapabilityService（重构规格第 10 节，Phase 2 + 2026-09-14 基线修正）——对 Managed Extension 暴露
+// ctx.capabilities：register() 注册语义能力定义、execute() 执行 Broker 双重校验 + Lease 验证、
+// revoke/revokeSession/listLeases 代理 LeaseManager。
+// 【基线修正】继承 cordis `Service` 并以 `super(ctx, "capabilities")` 注册（而非往 ctx 上硬挂属性）：
+// 服务随所属 fiber 卸载自动注销，且 `inject: ["capabilities"]` 的插件能按 DSH 正常依赖注入拿到它；
+// 硬挂属性既不参与 service 生命周期，也无法被 `ctx.get("capabilities")` 正确解析。
+// 身份一律取 run.agent.id（可信 Tool Runtime 产生，规格 10.3 禁止 Extension 自报 Session）。
+export interface BrokerOperationExecutor {
+  // 作用：Phase 3 Broker 将实现的 Provider 执行接口——真正解析 Credential 并调用 External API；
+  // Phase 2 仅作为注入点，未注入时 execute 拒绝（Fail Closed）
+  execute(operation: BrokerOperation, signal?: AbortSignal): Promise<JsonValue>;
+}
+export interface CapabilityServiceDeps {
+  leases: LeaseManager;
+  /** 全局默认 TTL（definition 未指定时使用，与 Universal Policy 的 defaultTtlSeconds 一致） */
+  defaultTtlSeconds: number;
+  /** TTL 上限（与 Universal Policy 的 maxTtlSeconds 一致，超出拒绝注册） */
+  maxTtlSeconds: number;
+  /** Phase 3 Broker 注入的 Provider 执行器；Phase 2 不注入 */
+  executor?: BrokerOperationExecutor;
+}
+export class CapabilityService extends Service implements ManagedCapabilitySource {
   private readonly definitions = new Map<string, ManagedCapabilityDefinition>();
-  constructor(private readonly deps: CapabilityServiceDeps) {}
+  constructor(ctx: Context, private readonly deps: CapabilityServiceDeps) {
+    // 作用：构造即注册服务——cordis 会把本实例挂到 `ctx.capabilities`，随 ctx 的 fiber 卸载自动注销
+    super(ctx, CAPABILITIES_SERVICE_NAME);
+  }
   register(definition: ManagedCapabilityDefinition): () => void {
     // 作用：注册一条 Managed 语义能力定义（规格 10.4）——防御校验（Fail Closed）：toolName/provider/
     // action 必须非空字符串，resource 必须函数，ttlSeconds 若提供必须 (0, maxTtlSeconds] 的整数；

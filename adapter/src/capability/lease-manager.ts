@@ -1,8 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { GuardError } from "./errors.js";
 import type { LeaseStore } from "./lease-store.js";
-import type { CapabilityLease, CapabilityScope, LeaseKind } from "./types.js";
-// 作用：LeaseManager（重构规格第 5.7 节）——只负责 issue / validate / findMatching / revoke /
+import type { CapabilityLease, CapabilityScope, LeaseKind } from "./types.js";// 作用：LeaseManager（重构规格第 5.7 节）——只负责 issue / validate / findMatching / revoke /
 // revokeSession / list；禁止混入 Approval UI、Tool Hook、Credential、Provider 逻辑。
 export interface IssueLeaseInput {
   sessionId: string;
@@ -44,10 +43,12 @@ export class LeaseManager {
     await Promise.resolve(this.store.insert(lease));
     return lease;
   }
-  async findMatching(sessionId: string, toolName: string, scopeKey: string): Promise<CapabilityLease | undefined> {
+  async findMatching(sessionId: string, toolName: string, scopeKey: string, kind?: LeaseKind): Promise<CapabilityLease | undefined> {
     // 作用：查找并校验可复用 Lease——store 命中后 validate（实时 TTL 比较 + 惰性标记 EXPIRED）；
-    // 任何无效（撤销/过期/不存在）统一返回 undefined，由上层保持 ask 重新走授权
-    const lease = await Promise.resolve(this.store.findMatching({ sessionId, toolName, scopeKey }));
+    // 任何无效（撤销/过期/不存在）统一返回 undefined，由上层保持 ask 重新走授权。
+    // kind 可选：沙箱授权（sandbox-mode）必须按种类精确匹配，避免与 exact-arguments 等同 scope key 的
+    // 其他种类 Lease 互相复用（不同种类授权的"效果"完全不同，混用会造成越权）
+    const lease = await Promise.resolve(this.store.findMatching({ sessionId, toolName, scopeKey, kind }));
     if (!lease) return undefined;
     try {
       return this.validate(lease);
@@ -60,6 +61,25 @@ export class LeaseManager {
     // 完全无记录抛 LEASE_REQUIRED 由上层处理，有记录则交给 validate 抛出 LEASE_REVOKED/LEASE_EXPIRED；
     // 与 findMatching（Gate 复用路径，失败统一回落 undefined 重新 ask）语义互补
     return await Promise.resolve(this.store.findLatest({ sessionId, toolName, scopeKey }));
+  }
+  get(id: string): CapabilityLease | undefined {
+    // 作用：按 id 读取单条 Lease（不校验、不改状态）——供沙箱授权回收路径实时查询「该 Lease 是否还活着」。
+    // 刻意不做 validate：调用方需要区分「不存在 / 已撤销 / 已过期」三种失效情形并统一按失效处理，
+    // 抛错反而会打断批量回收（settle）流程；安全判定请改用 isLive()。
+    return this.store.get(id) as CapabilityLease | undefined;
+  }
+  isLive(id: string): boolean {
+    // 作用：判断某 Lease 当前是否有效（不存在 / 非 ACTIVE / 已过期 一律 false），并顺手把过期项惰性标记为
+    // EXPIRED。过期判定【必须】用本对象注入的时钟，禁止让调用方自己传 time——否则调用方一旦用真实挂钟
+    // （或测试里的模拟时钟）与 Lease 时钟不一致，就会把仍然有效的授权误判为失效并触发错误回滚。
+    const lease = this.store.get(id) as CapabilityLease | undefined;
+    if (!lease) return false;
+    if (lease.status !== "ACTIVE") return false;
+    if (this.now() >= lease.expiresAt) {
+      lease.status = "EXPIRED";
+      return false;
+    }
+    return true;
   }
   validate(lease: CapabilityLease): CapabilityLease {
     // 作用：校验 Lease 有效性（Fail Closed）——REVOKED 抛 LEASE_REVOKED；now >= expiresAt 惰性标记

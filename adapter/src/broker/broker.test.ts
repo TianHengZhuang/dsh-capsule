@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { AuditService } from "../audit/audit-service.js";
 import { GuardError } from "../capability/errors.js";
 import { LeaseManager } from "../capability/lease-manager.js";
@@ -97,13 +98,29 @@ describe("ProviderRegistry（规格 11/11.2）", () => {
     }
   });
 });
-describe("findCredentialService（规格 3.2/11.3）", () => {
-  it("形状不符返回 undefined（Fail Closed），含 resolve 函数的服务原样返回", () => {
+describe("findCredentialService（规格 3.2/11.3；2026-09-14 修正为经 ctx.get 解析服务）", () => {
+  it("服务缺失 / 形状不符返回 undefined（Fail Closed），含 resolve 函数的服务原样返回", () => {
     expect(findCredentialService({})).toBeUndefined();
-    expect(findCredentialService({ credentials: null })).toBeUndefined();
-    expect(findCredentialService({ credentials: { resolve: "not-a-function" } })).toBeUndefined();
+    // ctx.get 返回 undefined（服务未注册）或非服务对象
+    expect(findCredentialService({ get: () => undefined })).toBeUndefined();
+    expect(findCredentialService({ get: () => null })).toBeUndefined();
+    expect(findCredentialService({ get: () => ({ resolve: "not-a-function" }) })).toBeUndefined();
+    // ctx.get 本身抛错：同样按不可用处理，不向外抛（避免打断执行链）
+    expect(
+      findCredentialService({
+        get: () => {
+          throw new Error("cannot get property");
+        },
+      }),
+    ).toBeUndefined();
     const service = new FakeCredentialService("tok");
-    expect(findCredentialService({ credentials: service })).toBe(service);
+    expect(findCredentialService({ get: () => service })).toBe(service);
+  });
+  it("属性访问不再是解析路径：只有在 ctx 上直挂 credentials 而没有 get 时不再被识别", () => {
+    // 这是刻意的行为变化——cordis 中未经 inject 的服务属性访问会抛错，
+    // 因此 Guard 一律经 ctx.get 解析；旧的最小形状探测在真实 cordis 下会抛错。
+    const service = new FakeCredentialService("tok");
+    expect(findCredentialService({ credentials: service })).toBeUndefined();
   });
 });
 describe("CredentialBroker enforcement（规格 11.3/19 Broker Mode/23.9-23.15）", () => {
@@ -355,7 +372,7 @@ describe("端到端：Gate + CapabilityService + CredentialBroker + GitHubProvid
     const registry = new ProviderRegistry();
     registry.register(new GitHubProvider({ fetchImpl }));
     const broker = new CredentialBroker({ registry, getCredentials: () => credentials });
-    const service = new CapabilityService({ leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800, executor: broker });
+    const service = new CapabilityService(new Context(), { leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800, executor: broker });
     service.register(githubReadDefinition);
     const gate = new UniversalGate({ policy: new PolicyResolver(DEFAULT_UNIVERSAL_POLICY), scopes: new ScopeResolver(), leases, pending: new PendingRegistry(), audit, managed: service });
     const ask = () => Promise.resolve({ kind: "ask" as const, reason: "need confirm" });

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { AuditService } from "../audit/audit-service.js";
 import type { AuditDecision, ToolAuditEvent } from "../audit/types.js";
 import { LeaseManager } from "../capability/lease-manager.js";
@@ -15,7 +16,7 @@ const fakeProviders: ConsoleProviderSource = {
 };
 function makeCapabilities(leases: LeaseManager): CapabilityService {
   // 作用：构造注册了一条 managed 定义的 CapabilityService——resource 函数确定性返回，供投影断言
-  const service = new CapabilityService({ leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800 });
+  const service = new CapabilityService(new Context(), { leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800 });
   service.register({ toolName: "github.create_issue", provider: "github", action: "issues.create", resource: () => "repo:o/r", ttlSeconds: 300 });
   return service;
 }
@@ -178,17 +179,18 @@ describe("HTTP 只读查看器（规格 Phase 4）", () => {
   });
 });
 describe("插件装配（index.ts apply + console 配置）", () => {
-  it("console.enabled 启动只读查看器，dispose 后端口释放且 ctx.capabilities 移除", async () => {
-    const ctx = { on: () => () => undefined } as unknown as CapsuleHostContext;
+  it("console.enabled 启动只读查看器，dispose 后端口释放且 capabilities 服务仍可解析", async () => {
+    const ctx = new Context() as unknown as CapsuleHostContext & { get(name: string): unknown };
+    (ctx as { on?: unknown }).on = () => () => undefined;
     const dispose: DisposeHook = await apply(ctx, { console: { enabled: true, port: 0 } });
-    expect(typeof (ctx as { capabilities?: unknown }).capabilities).toBe("object");
+    expect(typeof ctx.get("capabilities")).toBe("object");
     await dispose();
-    expect((ctx as { capabilities?: unknown }).capabilities).toBeUndefined();
   });
-  it("默认不启用 console：不监听任何端口，apply 仍完成装配", async () => {
-    const ctx = { on: () => () => undefined } as unknown as CapsuleHostContext;
+  it("默认不启用 console：不监听任何端口，apply 仍完成装配并注册 capabilities 服务", async () => {
+    const ctx = new Context() as unknown as CapsuleHostContext & { get(name: string): unknown };
+    (ctx as { on?: unknown }).on = () => () => undefined;
     const dispose = await apply(ctx, {});
-    expect(typeof (ctx as { capabilities?: unknown }).capabilities).toBe("object");
+    expect(typeof ctx.get("capabilities")).toBe("object");
     await dispose();
   });
 });

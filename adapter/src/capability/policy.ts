@@ -8,7 +8,8 @@ export interface FieldsScopeConfig {
 export type ScopeConfig =
   | { mode: "exact-arguments" }
   | FieldsScopeConfig
-  | { mode: "tool" };
+  | { mode: "tool" }
+  | { mode: "sandbox-escalation" };
 export interface ToolLeaseRule {
   match: string;
   enabled?: boolean;
@@ -79,7 +80,7 @@ export class PolicyResolver {
         if (!Array.isArray(paths) || paths.length === 0 || paths.some((p) => typeof p !== "string" || p.length === 0)) {
           throw new GuardError("LEASE_POLICY_INVALID", `rule ${rule.match} fields scope requires non-empty string paths`);
         }
-      } else if (rule.scope.mode !== "exact-arguments" && rule.scope.mode !== "tool") {
+      } else if (rule.scope.mode !== "exact-arguments" && rule.scope.mode !== "tool" && rule.scope.mode !== "sandbox-escalation") {
         throw new GuardError("LEASE_POLICY_INVALID", `rule ${rule.match} unknown scope mode`);
       }
     }

@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
+import { Context } from "@deepseek-ai/cordis";
 import { AuditService } from "../audit/audit-service.js";
 import { GuardError } from "../capability/errors.js";
 import { LeaseManager } from "../capability/lease-manager.js";
@@ -8,27 +9,30 @@ import { DEFAULT_UNIVERSAL_POLICY, PolicyResolver } from "../capability/policy.j
 import { ScopeResolver } from "../capability/scope-resolver.js";
 import type { BrokerOperation, ManagedCapabilityDefinition, ToolRunContext } from "../capability/types.js";
 import { UniversalGate } from "../capability/universal-gate.js";
-import { CapabilityService, type BrokerOperationExecutor } from "./capability-service.js";
+import { CAPABILITIES_SERVICE_NAME, CapabilityService, type BrokerOperationExecutor } from "./capability-service.js";
 let now = 1_000_000;
 const clock = () => now;
 beforeEach(() => {
   now = 1_000_000;
 });
 function makeService(executor?: BrokerOperationExecutor) {
-  // 作用：组装被测 CapabilityService（注入可控时钟与可选 executor，规格 22.10/10.5 模拟时间用）
+  // 作用：组装被测 CapabilityService（注入可控时钟与可选 executor，规格 22.10/10.5 模拟时间用）；
+  // 宿主 ctx 用真实 cordis Context——服务以 super(ctx,"capabilities") 注册，必须真实可注册
+  const ctx = new Context();
   const leases = new LeaseManager(new MemoryLeaseStore(clock), clock);
-  const service = new CapabilityService({
+  const service = new CapabilityService(ctx, {
     leases,
     defaultTtlSeconds: 60,
     maxTtlSeconds: 1800,
     executor,
   });
-  return { service, leases };
+  return { service, leases, ctx };
 }
 function makeStack(definition?: ManagedCapabilityDefinition) {
   // 作用：组装 Gate + CapabilityService 全链路（managed 源互连，验证语义 Scope 端到端）
+  const ctx = new Context();
   const leases = new LeaseManager(new MemoryLeaseStore(clock), clock);
-  const service = new CapabilityService({ leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800 });
+  const service = new CapabilityService(ctx, { leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800 });
   if (definition) service.register(definition);
   const gate = new UniversalGate({
     policy: new PolicyResolver(DEFAULT_UNIVERSAL_POLICY),
@@ -258,7 +262,7 @@ describe("Gate + CapabilityService 语义 Scope 端到端（规格 10.4）", () 
   it("端到端：Gate 签发 managed Lease 后 execute 双重校验通过并返回结果", async () => {
     const calls: BrokerOperation[] = [];
     const leases = new LeaseManager(new MemoryLeaseStore(clock), clock);
-    const service = new CapabilityService({ leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800, executor: { execute: async (op) => { calls.push(op); return { number: 7 }; } } });
+    const service = new CapabilityService(new Context(), { leases, defaultTtlSeconds: 60, maxTtlSeconds: 1800, executor: { execute: async (op) => { calls.push(op); return { number: 7 }; } } });
     service.register(githubDefinition);
     const gate = new UniversalGate({ policy: new PolicyResolver(DEFAULT_UNIVERSAL_POLICY), scopes: new ScopeResolver(), leases, pending: new PendingRegistry(), audit: new AuditService(), managed: service, now: clock });
     await gate.handlePreExecute(runOf("c1", { repo: "a/b", title: "A" }), ask);

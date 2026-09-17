@@ -8,7 +8,13 @@ export type AuditDecision =
   | "LEASE_ISSUED"
   | "APPROVAL_REJECTED"
   | "TOOL_SUCCESS"
-  | "TOOL_ERROR";
+  | "TOOL_ERROR"
+  /** P0-2：沙箱升级被批准后提升了会话沙箱模式（scopeDisplay 含工具名与目标模式） */
+  | "SANDBOX_MODE_RAISED"
+  /** P0-2：Lease 结束（撤销/到期）后会话沙箱模式已回滚 */
+  | "SANDBOX_MODE_RESTORED"
+  /** P0-2：模式已被用户手动改动，Guard 主动跳过回滚以免覆盖用户选择 */
+  | "SANDBOX_MODE_SKIPPED_USER_OVERRIDE";
 export interface ToolAuditEvent {
   id: string;
   timestamp: number;

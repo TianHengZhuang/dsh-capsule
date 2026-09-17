@@ -5,13 +5,28 @@ import type { ProviderAdapter } from "./provider.js";
 import type { ProviderRegistry } from "./registry.js";
 export const DEFAULT_BROKER_TIMEOUT_MS = 15_000;
 export interface CredentialServiceLike {
-  // TODO(规则 4)：DSH ctx.credentials 的确切形状以当前安装版本官方 TypeScript 类型定义为准，
-  // 本接口仅按规格第 3.2/11.3 节声明 resolve(ref)；接入真实 DSH 时需逐字段核对返回值结构。
+  // 作用：DSH `ctx.credentials` 的最小形状（2026-09-14 按已安装版本核实，取代早先的 TODO(规则 4)）：
+  // 服务以 `super(ctx, "credentials")` 注册；`resolve(ref)` 是 abstract，返回
+  // `ResolvedCredential | undefined`，其中 ResolvedCredential = { value: string; source: string }。
+  // 【契约要点】未配置时返回 undefined（不是抛错），因此调用方必须把 undefined 当作
+  // CREDENTIAL_NOT_CONFIGURED 处理；per-operation 重新 resolve 正是 DSH 自身的设计要求
+  //（"consumers re-resolve at each operation and must not cache across operations"）。
   resolve(ref: string): Promise<unknown>;
 }
 export function findCredentialService(ctx: Record<string, unknown>): CredentialServiceLike | undefined {
-  // 作用：从 DSH ctx 上定位 credentials 服务——形状不符（无 resolve 函数）即视为不可用（Fail Closed）
-  const credentials = ctx["credentials"];
+  // 作用：从 DSH ctx 上定位 credentials 服务——cordis 服务必须用 `ctx.get(name)` 读取
+  //（未经 inject 的服务用属性访问会被 cordis 代理抛 "cannot get property … without inject"），
+  // 服务缺失时 `get` 返回 undefined。形状不符（无 resolve 函数）同样视为不可用（Fail Closed）。
+  // `ctx.get` 本身也包在 try 里：inactive context 下它会抛错，而"取不到凭证服务"应当是
+  // CREDENTIAL_NOT_CONFIGURED 而不是把异常抛进调用链（与 buildSandboxContext 的降级一致）。
+  const get = (ctx as { get?: unknown }).get;
+  if (typeof get !== "function") return undefined;
+  let credentials: unknown;
+  try {
+    credentials = (get as (name: string) => unknown).call(ctx, "credentials");
+  } catch {
+    return undefined;
+  }
   if (typeof credentials === "object" && credentials !== null && typeof (credentials as { resolve?: unknown }).resolve === "function") {
     return credentials as CredentialServiceLike;
   }
@@ -95,6 +110,8 @@ export class CredentialBroker implements BrokerOperationExecutor {
     } catch {
       throw new GuardError("CREDENTIAL_NOT_CONFIGURED", `cannot resolve ${provider.credentialRef}`);
     }
+    // 兼容 DSH 的真实形状（ResolvedCredential = { value, source }）与裸字符串；
+    // `resolve` 未配置时返回 undefined —— 与抛错一并按 CREDENTIAL_NOT_CONFIGURED 处理
     const value = typeof resolved === "string" ? resolved : typeof resolved === "object" && resolved !== null ? (resolved as { value?: unknown }).value : undefined;
     if (typeof value !== "string" || value.length === 0) {
       throw new GuardError("CREDENTIAL_NOT_CONFIGURED", `cannot resolve ${provider.credentialRef}`);

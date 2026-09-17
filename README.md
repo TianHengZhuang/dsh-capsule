@@ -28,24 +28,33 @@
 > **项目定位已经变化。** 当前仓库是纯 TypeScript 的 Capability Guard，不再包含旧版 Python / Docker / Unix Domain Socket 隔离 Runtime。本文只描述当前代码真实存在的能力。
 
 > [!WARNING]
-> **Developer Preview。** Lease、Managed Capability、Broker、GitHub Provider、Audit 与 Governance Console 已在仓库实现；但 `adapter` 仍使用与 DSH 解耦的最小接口，真实 DeepSeek Harness / Cordis 包级类型与安装链路尚待正式联调。当前版本不应宣传为已可直接 `dsh plugin add` 的生产发行包。
+> **Developer Preview。** 核心链路（Lease、沙箱升级有界授权、Managed Capability、Broker、Audit、Console）已在仓库实现，并有**真 cordis 集成测试**守护 hook 接线；但尚未在真实 profile 中作为插件端到端实跑，也还没有可直接安装的发行包（缺 `dsh.bundle.patch`）。
+>
+> DSH 本身仍在快速迭代：本仓库与本机安装版源码的核对结论记录在 `docs/集成基线-真实DSH行为.md`，**升级 DSH 后请重跑该文档第 10 节的检查清单**。
 
 ---
 
 ## 为什么需要它？
 
-Agent 工具权限通常有两个极端：要么每次敏感操作都重新审批，体验很差；要么把长期 Token / 宽权限一次性交给插件，授权面又过大。
+DSH 原生的权限体系有两层，中间是空的：
 
-DSH Capsule 在两者之间增加一层**短生命周期 Capability**：
+| DSH 原生 | 粒度 | 代价 |
+|---|---|---|
+| `permission-presets`（会话级沙箱 + 审批组合） | 一次生效、覆盖面广 | 粗：一放开就是整个会话 |
+| `allowed-once`（单次审批） | 精确到这一次调用 | 细但每次都要问 |
+
+缺的那一层是：**「这个 Session 内、这个工具、这类操作，在一段时间内已经批过了」**——既有界、又能复用、还能撤销与审计。
+
+DSH Capsule 补的就是这一层：
 
 | 问题 | DSH Capsule 的处理方式 |
 |---|---|
 | 同一个安全操作反复弹审批 | `allowed-once` 后签发短期 Lease，在相同 Scope + Session 内复用 |
 | 授权范围太宽 | Lease 绑定 `Session × Tool × Scope × TTL` |
+| 授权无法自动收回 | TTL 到期回收；沙箱模式提升还会**回滚到批准前的档位** |
 | 插件直接接触长期 Token | Managed Extension 只提交 Operation，Broker 每次调用时动态解析 Credential |
 | 插件伪造资源或 Action | Guard 从可信 `run.arguments` 重算资源，再与 Operation 做完整比对 |
-| 权限过期或需要立即回收 | 实时 TTL 校验 + `revoke()` / `revokeSession()` |
-| 发生了什么难以追踪 | Secret-safe Audit + 只读 Governance Console |
+| 发生了什么难以追踪 | Secret-safe Audit + 只读 Governance Console（放宽/回滚都会留痕） |
 | 安全失败被静默放行 | 关键路径统一 **Fail Closed** |
 
 一句话理解：
@@ -58,13 +67,21 @@ DSH Capsule 在两者之间增加一层**短生命周期 Capability**：
 
 ### 1. Universal Mode — 已有插件零改造获得短期授权
 
-如果某个已安装 Tool 原本就会被 DSH Policy 判定为 `ask`，Guard 可以直接工作在原生 `tools/pre-execute` / `approval/request` / `tools/result` 链路上：
+Guard 工作在 DSH 原生工具管线的**四个** hook 上（`tools/pre-execute` / `tools/execute` / `approval/request` / `tools/result`），原始语义保持不变：
 
 - 原始 `deny`：始终保持 `deny`，Lease **不能覆盖拒绝**；
 - 原始 `allow`：直接透传，Guard 不制造新的 Approval；
 - 原始 `ask`：先查找匹配 Lease；命中则临时 `allow`，否则继续 `ask`；
 - 用户返回 `allowed-once` 后，Guard 才签发带 Scope 与 TTL 的 Lease；
 - `rejected` / `cancelled` / `unavailable` 均不签发。
+
+> **沙箱升级（sandbox escalation）是当前最有价值的一条链路。** 它经过了与本机安装版 DSH 源码的逐行核对（结论见 `docs/集成基线-真实DSH行为.md`）：
+>
+> DSH 的 `tools/pre-execute` **落底决策就是 `allow`**，标准 profile 下没有任何随产品交付的监听器会返回 `ask`。真实审批来自 pwsh/bash/fs **工具体内部**的 `approveEscalation → ctx.approval.request(...)`（例如文件写入越出工作区时，模型带 `sandbox_permissions` + `justification` 重试）。
+>
+> 因此 Guard 的接入点是：在 `tools/execute`（工具体之前、参数仍可用）识别这次升级并按 **`(toolName, 目标模式)`** 生成语义 Scope；用户批准一次后签发 `sandbox-mode` Lease，并**提升该会话的沙箱模式**——后续同类升级不会被沙箱拒绝，也就**不再需要审批**。
+>
+> 到期或撤销时，模式会**回滚到批准前的档位**；若用户在此期间手动改过模式，Guard 跳过回滚并记录审计，**绝不覆盖用户的选择**。
 
 这意味着 Universal Mode 的价值是**减少重复审批，同时保持 DSH 原有权限语义不变**。
 
@@ -110,25 +127,27 @@ toolName + provider + action + resource(args) + ttl
 
 | 组件 | 职责 |
 |---|---|
-| `UniversalGate` | 横切 DSH Tool Pipeline，只增强下游 `ask`，处理 Lease 复用、签发与审计 |
+| `UniversalGate` | 四个 hook 横切 DSH Tool Pipeline：只增强下游 `ask`、识别沙箱升级、签发与复用 Lease、回收授权 |
+| `SandboxGrantManager` | 会话沙箱模式的有界授权：提升、TTL 回滚、用户改动冲突检测 |
 | `PolicyResolver` | 解析全局和 Tool 级 TTL / Scope 策略，非法策略 Fail Closed |
-| `ScopeResolver` | 生成 `exact-arguments` / `fields` / `tool` Scope |
-| `LeaseManager` | `issue` / `validate` / `findMatching` / `revoke` / `revokeSession` |
+| `ScopeResolver` | 生成 `exact-arguments` / `fields` / `tool` / `sandbox-escalation` Scope |
+| `LeaseManager` | `issue` / `validate` / `findMatching` / `isLive` / `revoke` / `revokeSession` |
 | `CapabilityService` | 暴露 `ctx.capabilities`，管理 Managed Capability，并在执行前做双重校验 |
 | `CredentialBroker` | Provider 查找、Action Allowlist、per-operation Credential Resolution、超时和错误脱敏 |
 | `ProviderRegistry` | 管理可信 Provider Adapter；第三方 Extension 不直接注册 Secret-capable Provider |
 | `GitHubProvider` | 当前示例 Provider，支持 `issues.read` / `issues.create` |
-| `AuditService` | 内存 Ring Buffer，记录不含 Secret / 原始参数的安全事件 |
+| `AuditService` | 内存 Ring Buffer，记录不含 Secret / 原始参数的安全事件（含模式提升与回滚） |
 | `GovernanceConsole` | 只读聚合 Plugins / Tools / Capabilities / Leases / Activity / Audit |
 
 ### 与 DSH 原生机制的边界
 
 DSH Capsule **不是第二套 Harness**。它有意复用 DSH 已有机制：
 
-- Approval 仍由 DSH 原生 `approval/request` Answerer 决定；
+- Approval 仍由 DSH 原生 `approval/request` Answerer 决定（Guard 只观察结果，**从不合成**）；
 - Tool 最终是否允许执行仍受 DSH 其他 Gate / Guard 约束；
 - Credential 仍来自 DSH Credential Service；
-- 进程 / 文件 / 网络隔离仍由 DSH Sandbox 或外部安全机制负责。
+- 进程 / 文件 / 网络隔离仍由 DSH Sandbox 或外部安全机制负责；
+- 沙箱档位本身仍由 DSH 的会话状态承载，Guard 只是**给它的变更加上时间边界与回滚**。
 
 Guard 只新增一件事：**把一次明确的授权变成受 Scope、Session 与 TTL 约束的短期 Capability，并在 Managed Mode 中把 Credential 解析集中到 Broker。**
 
@@ -205,6 +224,28 @@ SHA-256(toolName + canonical JSON(arguments))
 ### `tool` — 最宽
 
 同一 Session 内只按 Tool Name 复用。它必须显式配置，不能成为默认行为。
+
+### `sandbox-escalation` — 沙箱升级语义 Scope
+
+只对带 `sandbox_permissions` + `justification` 的调用生效，Scope Key 为：
+
+```text
+SHA-256(toolName + 目标沙箱模式)
+```
+
+**刻意不把 `justification` 或参数原文纳入 Scope**：前者是模型每次现写的自由文本，纳入就等于把安全边界建立在模型输出上，且措辞一变授权立即失效；后者在升级场景里复用率几乎为零。按 `(工具, 目标模式)` 取键，语义恰好是「本会话内该工具可以升到这一档」。
+
+启用方式（默认**不启用**，不配置就完全不改变 DSH 行为）：
+
+```jsonc
+{
+  "rules": [
+    { "match": "pwsh", "scope": { "mode": "sandbox-escalation" }, "ttlSeconds": 300 }
+  ]
+}
+```
+
+授权真正生效依赖宿主服务（`ctx.sessionProjections` + `session.append("sandbox/mode", …)`）；服务缺失时该链路自动降级为"不提升"，即回到 DSH 原生逐次审批，**不会越权**。
 
 ### `managed` — 业务语义 Scope
 
@@ -290,7 +331,7 @@ GET /api/audit
 - Windows / macOS / Linux 均可运行核心 TypeScript 代码；CI 已配置三平台矩阵
 
 > [!NOTE]
-> 当前仓库尚未完成正式的 DSH package / profile 发布，因此以下步骤是**源码开发方式**，不是最终用户安装命令。
+> `@dsh-capsule/adapter` 现已声明 `dsh.bundle.patch`（见 `adapter/cordis.patch.yml`），因此可以作为一个 profile bundle 层被 DSH 装载；但**尚未在真实 profile 中做过端到端实跑**，也没有发布到 registry。下面的"源码开发方式"与"接入 DSH profile"两段都请按 Developer Preview 对待。
 
 ```bash
 git clone <your-repository-url>
@@ -308,6 +349,37 @@ Workspace：
 @dsh-capsule/extension-sdk
 @dsh-capsule/github-demo
 ```
+
+### 接入 DSH profile（Developer Preview）
+
+插件包的 `package.json` 声明了 bundle patch，因此用 DSH 自带的 profile 插件管理命令即可接入：
+
+```bash
+# 把本仓库的 adapter 作为一个 bundle 装进 web profile
+dsh plugin --profile web add <本仓库 adapter 目录的绝对路径>
+
+# 装载前先离线检查组合结果（不 boot、不执行任何插件代码）
+dsh --profile web --dump-config
+
+# 启动
+dsh web
+```
+
+安装后 Guard 会注册四个观察型 hook。**未配置 `rules` 时它不改变任何 DSH 行为**；要启用沙箱升级复用，在 profile 的 `cordis.patch.yml` 中按 `id` 覆盖该行：
+
+```yaml
+- id: capability-guard
+  name: '@dsh-capsule/adapter'
+  config:
+    defaultTtlSeconds: 60
+    maxTtlSeconds: 1800
+    rules:
+      - match: pwsh
+        ttlSeconds: 300
+        scope: { mode: sandbox-escalation }
+```
+
+> 本仓库的 `adapter/cordis.patch.yml` 可用 `dsh --profile <name> --dump-config --patch <该文件路径>` 单独验证语法，无需真正安装。
 
 ### 默认策略
 
@@ -337,6 +409,13 @@ Workspace：
         mode: "fields",
         paths: ["project", "environment"]
       }
+    },
+    {
+      // 沙箱升级：本会话内该工具可升到 danger-full-access，批准一次后 300 秒内免问，
+      // 到期回滚到批准前的档位。默认不配置 = 完全不改变 DSH 行为。
+      match: "pwsh",
+      ttlSeconds: 300,
+      scope: { mode: "sandbox-escalation" }
     },
     {
       match: "dangerous.admin",
@@ -424,6 +503,14 @@ PROVIDER_ERROR
 
 > **无法证明当前 Operation 被授权，就不执行。**
 
+沙箱升级链路同样遵循这一原则，且可审计的治理事件是完整的（放宽与收回都有记录）：
+
+```text
+SANDBOX_MODE_RAISED                  会话沙箱模式被提升（含工具与目标档位）
+SANDBOX_MODE_RESTORED                Lease 结束，模式已回滚
+SANDBOX_MODE_SKIPPED_USER_OVERRIDE   检测到用户已手动改动模式，跳过回滚并交还控制权
+```
+
 ---
 
 ## 安全边界与非目标
@@ -436,9 +523,10 @@ PROVIDER_ERROR
 
 ### Universal Mode 能承诺什么
 
-- 为原本触发 `ask` 的 Tool 增加短期 Lease；
+- 为原本触发 `ask` 的 Tool（以及沙箱升级）增加短期 Lease；
 - Session / Tool / Scope / TTL 绑定；
 - 过期、撤销、复用与审计；
+- 沙箱模式提升会在 Lease 结束后**回滚**，且不覆盖用户的手动改动；
 - 不覆盖 DSH 原始 `deny`；
 - 不修改已有 Tool 代码即可接入。
 
@@ -447,7 +535,9 @@ PROVIDER_ERROR
 - 不能保证任意第三方插件看不到 Credential；
 - 不能阻止插件自己发网络请求；
 - 不能把任意第三方代码强制路由到 Broker；
-- 不提供进程、容器、VM 或 microVM 级恶意代码隔离。
+- 不提供进程、容器、VM 或 microVM 级恶意代码隔离；
+- **不能阻止其他插件认领 `approval/request`**：这是 DSH 的开放瀑布事件，"谁认领谁说了算"。任何插件都可以零交互返回 `allowed-once`，也可以抢先认领从而遮蔽 Guard 的观察位置。这是 DSH 事件模型的固有性质，不属于本插件能防御的范围；
+- **不能阻止其他插件直接改写会话权限状态**：`setSandboxMode(session, mode)`、`ctx.permissionPresets.set(...)`、`ctx.approval.setPolicy(...)` 在 DSH 中都是公开 API，Guard 只是选择"只用其中最小的一档并加上边界"。
 
 ### Managed Mode 额外提供什么
 
@@ -458,7 +548,17 @@ PROVIDER_ERROR
 - per-operation Credential Resolution；
 - Provider Error Secret Redaction。
 
-但它仍然是一个**架构级信任边界**，不是 OS 强隔离边界。需要不可信代码隔离时，应组合 DSH 原生 Sandbox 或其他外部隔离机制。
+### ⚠️ 关于 Managed Mode 边界的如实说明（请先读这一段）
+
+上面那些约束**由 SDK 约定与代码评审保证，不是运行时强制**。
+
+同进程的任何一个插件都可以绕开 Broker 自己去读 `process.env`、自己 `fetch`、自己调用上面那些权限改写 API。因此：
+
+- Managed Mode 的真实价值是**防止误用与集中审计**——让凭证只在一个可信路径里被解析、让外部调用留下统一记录、让凭证不会因为一个手滑的 `console.log` 泄漏；
+- 它**不是**"第三方插件拿不到凭证"的保证，也不是恶意代码隔离；
+- 需要不可信代码隔离时，应组合 DSH 原生 Sandbox、容器或独立进程等外部机制。运行时的强制边界是 **DSH 进程本身**，不是本插件。
+
+把这条写清楚，是因为把"架构约定"当成"安全边界"来宣传，是这类项目最常见也最危险的错误。
 
 ---
 
@@ -466,8 +566,11 @@ PROVIDER_ERROR
 
 | 能力 | 状态 |
 |---|---|
-| Universal Lease Gate | ✅ 已实现 |
+| Universal Lease Gate（四 hook） | ✅ 已实现 |
 | Session / Scope / TTL / Revoke | ✅ 已实现 |
+| 沙箱升级有界授权（`sandbox-escalation` + 模式提升与回滚） | ✅ 已实现 |
+| 真 cordis 集成测试（真实 `Context` / `waterfall` / `emit`） | ✅ 已实现 |
+| DSH 行为基线核实（逐行核对已安装版本源码） | ✅ 已完成（`docs/集成基线-真实DSH行为.md`） |
 | Managed Capability Service | ✅ 已实现 |
 | Credential Broker | ✅ 已实现 |
 | GitHub `issues.read` / `issues.create` Provider | ✅ 已实现 |
@@ -476,12 +579,12 @@ PROVIDER_ERROR
 | TypeScript Extension SDK | ✅ 已实现 |
 | GitHub Managed Extension Demo | ✅ 已实现 |
 | Ubuntu / Windows / macOS CI workflow | ✅ 已配置 |
-| 真实 DSH/Cordis 类型与 Loader 联调 | 🚧 待完成 |
-| 可直接安装的公开 DSH Release Package | 🚧 待完成 |
+| 在真实 profile 中做端到端联调（安装为插件并实跑） | 🚧 待完成 |
+| 可直接安装的公开 DSH Release Package（`dsh.bundle.patch`） | 🚧 待完成 |
 | Durable Lease Store | 🗺️ Roadmap |
 | 更多 Trusted Providers | 🗺️ Roadmap |
 
-DeepSeek Harness 本身也处于 Developer Preview 并快速迭代，因此正式接入时应始终以当前安装版本的 TypeScript 类型为准，而不是把事件签名硬编码为长期兼容承诺。
+DeepSeek Harness 本身也处于 Developer Preview 并快速迭代，因此正式接入时应始终以当前安装版本的 TypeScript 类型为准，而不是把事件签名硬编码为长期兼容承诺。**升级 DSH 后请重跑 `docs/集成基线-真实DSH行为.md` 第 10 节的检查清单。**
 
 ---
 
@@ -491,14 +594,18 @@ DeepSeek Harness 本身也处于 Developer Preview 并快速迭代，因此正�
 .
 ├── adapter/
 │   └── src/
-│       ├── index.ts                 # Guard 插件装配入口
+│       ├── index.ts                 # Guard 插件装配入口 + buildSandboxContext 宿主适配器
 │       ├── capability/
-│       │   ├── universal-gate.ts    # DSH Tool / Approval / Result Gate
+│       │   ├── universal-gate.ts    # 四个 hook：pre-execute / execute / approval / result
+│       │   ├── escalation.ts        # 沙箱升级的确定性识别与语义 Scope
+│       │   ├── sandbox-grant.ts     # 会话沙箱模式的有界授权（提升 / 回滚 / 冲突检测）
 │       │   ├── policy.ts            # TTL / Scope Policy
-│       │   ├── scope-resolver.ts    # Universal Scope
+│       │   ├── scope-resolver.ts    # Universal Scope（含 sandbox-escalation）
 │       │   ├── lease-manager.ts     # Lease 生命周期
 │       │   ├── lease-store.ts       # MemoryLeaseStore
 │       │   └── pending.ts           # callId 并发隔离
+│       ├── integration/
+│       │   └── cordis-pipeline.test.ts  # 真 cordis：hook 接线与瀑布认领语义
 │       ├── service/
 │       │   └── capability-service.ts
 │       ├── broker/
@@ -540,19 +647,29 @@ RBAC 更适合回答“这个角色通常拥有什么权限”。Capability Leas
 
 ### 没有 Docker 以后，Broker 还有意义吗？
 
-有。Broker 的核心价值不是容器通信，而是**减少 Secret 分发、集中 Provider Policy、统一审计与错误脱敏**。不过，没有 OS 隔离时它属于架构约束，不应宣传成恶意代码强隔离。
+有，但要如实定位：Broker 的核心价值是**防误用 + 可审计**——减少长期 Secret 的分发面、把高权限 API 调用收敛到一条可信路径、统一 Provider Policy 与错误脱敏。**它不防恶意**：同进程插件完全可以绕开它。没有 OS 隔离时它是架构约定，不应宣传成恶意代码强隔离（详见[安全边界](#-关于-managed-mode-边界的如实说明请先读这一段)）。
 
 ### Universal Mode 能保护所有第三方插件吗？
 
-它可以零改造地为**原本会触发 DSH `ask`** 的 Tool 增加短期 Lease；但不能强制第三方插件使用 Broker，也不能阻止插件访问其进程本身已经拥有的资源。
-
-### 支持 Windows / macOS / Linux 吗？
-
-当前主链路是纯 TypeScript，没有 Python / Docker / Unix Domain Socket 依赖；仓库 CI 也配置了三平台矩阵。真实 DSH 集成仍需按具体 DSH 版本做兼容性验证。
+它可以零改造地为**原本会触发 DSH `ask`** 的 Tool，以及**沙箱升级**，增加短期 Lease；但不能强制第三方插件使用 Broker，不能阻止其他插件认领 `approval/request`，也不能阻止插件访问其进程本身已经拥有的资源。
 
 ### 为什么默认 Scope 是 `exact-arguments`？
 
 因为零配置情况下无法可靠猜测某个第三方 Tool 的业务资源语义。默认只复用完全相同的参数，宁可多问一次，也不扩大授权面。
+
+**但要说实话**：在同一路径上，LLM 很少两次生成逐字节相同的参数，所以零配置的 `exact-arguments` 实际收益有限。真正省事的是显式配置 `fields`（按业务字段）或 `sandbox-escalation`（按工具与目标档位）——**收益来自显式配置，而不是默认值**。
+
+### 沙箱升级为什么不把 `justification` 算进 Scope？
+
+因为它是模型每次现写的自由文本。把它纳入 Scope 等于把安全边界建立在模型输出上，而且措辞一变授权立即失效、复用率几乎为零。Guard 只按 `(toolName, 目标模式)` 取键——这也符合"禁止用字符串启发式猜测安全边界"的项目规则。`justification` 只用于给人看（截断后展示）。
+
+### 沙箱升级会不会把用户手动设的权限冲掉？
+
+不会。回滚前会做冲突检测：如果当前模式已不是 Guard 最后写入的值（说明用户手动改过），Guard **跳过回滚**并写入 `SANDBOX_MODE_SKIPPED_USER_OVERRIDE` 审计，把控制权交还用户。
+
+### 支持 Windows / macOS / Linux 吗？
+
+当前主链路是纯 TypeScript，没有 Python / Docker / Unix Domain Socket 依赖；仓库 CI 也配置了三平台矩阵。真实 DSH 集成仍需按具体 DSH 版本做兼容性验证。
 
 ---
 
@@ -560,12 +677,13 @@ RBAC 更适合回答“这个角色通常拥有什么权限”。Capability Leas
 
 近期优先级：
 
-1. 使用真实 DeepSeek Harness / Cordis package types 完成 Adapter 联调；
-2. 补齐可复现的 DSH Loader / Profile 安装示例与版本兼容矩阵；
-3. 将 `MemoryLeaseStore` 抽象落到可选持久化实现；
+1. **在真实 profile 中做端到端联调**：把 Guard 打成带 `dsh.bundle.patch` 的插件包装进 profile，实跑一次"沙箱升级 → 批准 → 复用 → 到期回滚"；
+2. 对齐真实 DSH API：`defineTool`（需 `output: { schema, render }`）、`CapabilityService extends Service`；
+3. 将 `MemoryLeaseStore` 抽象落到可选持久化实现，并让 Audit 可导出（合规场景依赖它）；
 4. 增加更多窄 Action Schema 的 Trusted Provider；
-5. 强化 Console 的只读治理与可观测性，但不把它变成权限修改入口；
-6. 发布稳定的 Extension SDK 与最小 Managed Extension 模板。
+5. 为宽 Scope（`tool`）增加次数配额（`maxUses`），只有 TTL 不够；
+6. 强化 Console 的只读治理与可观测性，但不把它变成权限修改入口；
+7. 发布稳定的 Extension SDK 与最小 Managed Extension 模板。
 
 ---
 

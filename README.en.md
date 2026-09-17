@@ -27,6 +27,10 @@
 > [!IMPORTANT]
 > **The project direction has changed.** The current repository is a pure TypeScript Capability Guard. The former Python / Docker / Unix Domain Socket isolation runtime has been removed. This README documents only capabilities that exist in the current codebase.
 
+> [!CAUTION]
+> **This English README is out of date (2026-09-14).** Source-level verification against an installed DSH build falsified one of its core assumptions: `tools/pre-execute` falls through to `allow`, so Universal Mode cannot wait for a downstream `ask` there; the real approval path is the sandbox escalation inside the pwsh/bash/fs tool bodies.
+> The **Chinese README ([`README.md`](README.md)) is authoritative** and already carries the corrected model (four hooks, `sandbox-escalation` scope, sandbox-mode grants with TTL rollback, and the honest security-boundary wording). Porting those sections here is tracked as follow-up work. The technical baseline with file/line citations lives in `docs/集成基线-真实DSH行为.md` (Chinese).
+
 > [!WARNING]
 > **Developer Preview.** Lease management, Managed Capabilities, Broker, GitHub Provider, Audit, and the Governance Console are implemented in this repository. However, the `adapter` still uses minimal DSH-compatible interfaces and the real DeepSeek Harness / Cordis package-level types and installation path still require integration validation. Do not present the current tree as a production-ready `dsh plugin add` release.
 

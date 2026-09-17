@@ -1,15 +1,32 @@
 {
   "name": "@dsh-capsule/adapter",
   "version": "0.1.0",
-  "description": "DSH Capsule TypeScript Adapter (trusted thin layer)",
+  "description": "DSH Capability Guard — 面向 DeepSeek Harness 的短期授权与凭证代理解插件（Universal Lease + Managed Capability Broker）",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "cordis.patch.yml"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
   "devDependencies": {
+    "@deepseek-ai/cordis": "4.0.2",
     "@types/node": "^22",
     "typescript": "^5.6",
     "vitest": "^2.1"

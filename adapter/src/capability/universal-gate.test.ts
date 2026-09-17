@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AuditService } from "../audit/audit-service.js";
 import { LeaseManager } from "./lease-manager.js";
 import { MemoryLeaseStore } from "./lease-store.js";
@@ -214,7 +214,49 @@ describe("UniversalGate tools/pre-execute（规格 22 清单）", () => {
     expect(out.reason).toBe("need confirm");
     expect(pending.size()).toBe(0);
   });
-  it("install：注册三个 hook（前两个 prepend）且 dispose 正常", () => {
+  it("P0-3 不变量：approval/request 处理器只观察、绝不合成 outcome——sentinel 必须原样（同一引用）返回", async () => {
+    const { gate, leases, pending } = makeGate();
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    const sentinel = Object.freeze({ decision: "allowed-once" });
+    const spy = vi.fn(async () => sentinel);
+    const out = await gate.handleApprovalRequest({ callId: "c1" }, spy);
+    expect(out).toBe(sentinel);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(await leases.list()).toHaveLength(1);
+    expect(pending.get("c1")?.decision).toBe("APPROVED");
+  });
+  it("P0-3 不变量：rejected / cancelled / unavailable / allowed-once 四种下游结果全部原样引用返回", async () => {
+    for (const decision of ["allowed-once", "rejected", "cancelled", "unavailable"]) {
+      const { gate } = makeGate();
+      await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+      const sentinel = Object.freeze({ decision });
+      const out = (await gate.handleApprovalRequest({ callId: "c1" }, async () => sentinel)) as unknown as object;
+      expect(out).toBe(sentinel);
+    }
+  });
+  it("P0-3 不变量：无 pending 的 callId 必须原样透传下游结果且不签发 Lease", async () => {
+    const { gate, leases } = makeGate();
+    const sentinel = Object.freeze({ decision: "allowed-once" });
+    const out = await gate.handleApprovalRequest({ callId: "unmanaged" }, async () => sentinel);
+    expect(out).toBe(sentinel);
+    expect(await leases.list()).toHaveLength(0);
+  });
+  it("P0-3 不变量：签发失败（缺失 TTL，防御路径）也不得改写下游 outcome", async () => {
+    const { gate, pending } = makeGate();
+    const deps = (gate as unknown as { deps: { leases: LeaseManager } }).deps;
+    await gate.handlePreExecute(execOf("c1", { repo: "a/b" }), ask);
+    // 人为制造非法 TTL：签发必然抛错，验证 handleApprovalRequest 仍返回下游原值（Fail Closed 不改写）
+    pending.get("c1")!.ttlSeconds = 0;
+    const originalIssue = deps.leases.issue.bind(deps.leases);
+    deps.leases.issue = async () => {
+      throw new Error("LEASE_TTL_INVALID: forged for test");
+    };
+    const sentinel = Object.freeze({ decision: "allowed-once" });
+    const out = (await gate.handleApprovalRequest({ callId: "c1" }, async () => sentinel)) as unknown as object;
+    expect(out).toBe(sentinel);
+    deps.leases.issue = originalIssue;
+  });
+  it("install：注册四个 hook（前三个 prepend，含 P0-2 的 tools/execute）且 dispose 正常", () => {
     const { gate, pending } = makeGate();
     const registrations: { event: string; options?: { prepend?: boolean } }[] = [];
     const disposers: (() => void)[] = [];
@@ -227,11 +269,12 @@ describe("UniversalGate tools/pre-execute（规格 22 清单）", () => {
       },
     };
     const dispose = gate.install(bus as never);
-    expect(registrations.map((r) => r.event)).toEqual(["tools/pre-execute", "approval/request", "tools/result"]);
+    expect(registrations.map((r) => r.event)).toEqual(["tools/pre-execute", "tools/execute", "approval/request", "tools/result"]);
     expect(registrations[0].options).toEqual({ prepend: true });
     expect(registrations[1].options).toEqual({ prepend: true });
-    expect(registrations[2].options).toBeUndefined();
-    expect(disposers).toHaveLength(3);
+    expect(registrations[2].options).toEqual({ prepend: true });
+    expect(registrations[3].options).toBeUndefined();
+    expect(disposers).toHaveLength(4);
     expect(() => dispose()).not.toThrow();
     expect(pending.size()).toBe(0);
   });

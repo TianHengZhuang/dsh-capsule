@@ -1,9 +1,11 @@
 import { canonicalize, sha256Scope } from "./canonical.js";
+import { escalationScopeDisplay, escalationScopeKey, parseEscalation } from "./escalation.js";
 import { GuardError } from "./errors.js";
 import type { ResolvedToolPolicy } from "./policy.js";
 import type { CapabilityScope } from "./types.js";
 // 作用：Scope Resolver（重构规格第 5.4 节）——用确定性规则生成 Scope，禁止 LLM/字符串启发式
-// 猜测 Provider/Resource/Action；三种模式：exact-arguments（默认最保守）/ fields（用户显式配置）/ tool（最宽）。
+// 猜测 Provider/Resource/Action；四种模式：exact-arguments（默认最保守）/ fields（用户显式配置）/
+// tool（最宽）/ sandbox-escalation（P0-2：沙箱升级，按 (toolName, 目标模式) 语义复用）。
 const SENSITIVE_KEY_PATTERN = /(token|secret|password|authorization|cookie|credential|api[_-]?key)/i;
 const DISPLAY_MAX_LENGTH = 160;
 export class ScopeResolver {
@@ -13,6 +15,7 @@ export class ScopeResolver {
     if (mode === "exact-arguments") return this.resolveExactArguments(input.toolName, input.arguments);
     if (mode === "fields") return this.resolveFields(input.toolName, input.arguments, (policy.scope as { paths: string[] }).paths);
     if (mode === "tool") return this.resolveToolLevel(input.toolName);
+    if (mode === "sandbox-escalation") return this.resolveSandboxEscalation(input.toolName, input.arguments);
     throw new GuardError("LEASE_SCOPE_INVALID", `unsupported scope mode ${String(mode)}`);
   }
   private resolveExactArguments(toolName: string, args: unknown): CapabilityScope {
@@ -50,6 +53,21 @@ export class ScopeResolver {
       kind: "tool",
       key: `tool:${toolName}`,
       display: `tool=${toolName}（本 Session 内该工具全部调用）`,
+    };
+  }
+  private resolveSandboxEscalation(toolName: string, args: unknown): CapabilityScope {
+    // 作用：沙箱升级语义 Scope（P0-2）——key = SHA-256(toolName + 目标模式)，与参数原文无关：
+    // 用户批准「本会话内该工具可升级到某模式」后，同类升级都可复用；这是 DSH 原生缺失的「有界授权」。
+    // 参数中若不含可识别的升级请求（parseEscalation 返回 undefined）则抛错，上层 Fail Closed 保持原 ask。
+    const escalation = parseEscalation(args);
+    if (!escalation) {
+      throw new GuardError("LEASE_SCOPE_INVALID", `tool ${toolName} has no recognizable sandbox escalation request`);
+    }
+    const key = escalationScopeKey({ toolName, requestedMode: escalation.requestedMode });
+    return {
+      kind: "sandbox-escalation",
+      key,
+      display: escalationScopeDisplay({ toolName, requestedMode: escalation.requestedMode }, escalation.justification),
     };
   }
 }

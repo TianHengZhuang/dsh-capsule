@@ -4,6 +4,15 @@
 > 当前有效规格：`docs/DSH_Capability_Guard_基于现有版本重构技术规格.md`（增量重构，以其为准）。
 > 项目决策（2026-09-14，项目所有者确认）：**Legacy Python / Docker Isolated Runtime 已整体移除，不再预留、后续不实现**。规格中涉及 Legacy 保留 / Phase 5 Optional Isolated Runtime 的条款随之作废；本插件为纯 TypeScript，无 Python / Docker / UDS 依赖。
 
+> **集成基线（2026-09-14 对已安装 DSH 源码逐行核实，取代规格第 34 节的"待核对"占位）**
+> 完整核实报告（含行号引用与重跑清单）位于 `docs/集成基线-真实DSH行为.md`（注意：`/docs/` 被 `.gitignore` 排除，属本地文件）。
+> 以下四条是**已证伪的旧假设**与**必须遵守的新前提**，任何会话不得再按旧假设编码：
+>
+> 1. **`tools/pre-execute` 的落底决策是 `allow`**（`dsh-tools:3115-3116`），标准 profile 下没有任何 shipped listener 返回 `ask`（`dsh-base/cordis.patch.yml:254` 只挂 `tool-jobs`）。因此"在 pre-execute 等下游 ask"在真实 DSH 中**空转**，不产生任何 Lease。
+> 2. **真实审批入口是工具体内的 `approveEscalation → ctx.approval.request`**（`dsh-sandbox:93-104`），发生在 pre-execute 决策**之后**，且 `approval/request` 载荷**不含 tool arguments**（只有 agent/toolName/callId/reason/signal）。因此沙箱升级的 Scope 必须在 `tools/execute`（body 之前、arguments 可用）阶段算好并按 callId 关联。
+> 3. **授权要真正生效必须提升会话沙箱模式**：`setSandboxMode(session, mode)`（`dsh-sandbox-policy:41`，公开无门禁）＋ TTL 到期/撤销时回滚。**严禁**调用 `permissionPresets.set` / `approval.setPolicy` —— 内置 `danger-full-access` preset 配的是 `approval: never`，调用它等于永久关闭审批。
+> 4. **子 agent 被钉死 `approvalPolicy: 'never'`**（`dsh-subagent:566-571`），其 ask 在瀑布派发**之前**就被判 `rejected`。跨 session 继承授权在设计上不可能，**Lease Store 必须显式拒绝为子 session 签发**。
+
 ## 1. 项目一句话定位
 
 DSH Capability Guard 是面向 DeepSeek Harness 的通用 Tool 短期授权 + Managed Extension Broker 插件：任何原本触发 DSH Approval 的已装插件，**零代码改造**即获得短期 Lease、复用、过期、撤销与审计（Universal Mode）；遵循 Guard 标准开发的 Managed Extension 进一步由 Broker 代解析凭证与调用 Provider（Managed Mode）。默认主链路纯 TypeScript，Windows / macOS / Linux 均可运行。
@@ -14,9 +23,11 @@ DSH Capability Guard 是面向 DeepSeek Harness 的通用 Tool 短期授权 + Ma
 DeepSeek Harness 原生（Tool Pipeline / Approval / Credentials / Sandbox）
         ↓
 DSH Capability Guard（TS 插件，横切）
-   ├── Universal Gate：tools/pre-execute(prepend) → 只接管下游 ASK
-   │     ├── 有效 Lease 命中 → ALLOW
-   │     └── 无 Lease → 保持 ASK（reason 附加 Lease 说明）→ allowed-once → 签发
+   ├── Universal Gate（四个 hook，全部 prepend 观察）
+   │     ├── tools/pre-execute：只接管下游 ask（真实 DSH 中通常为 allow → 透传；仅 hook 插件会 ask）
+   │     ├── tools/execute：识别沙箱升级参数 → 按 (toolName, 目标模式) 算语义 Scope → 记 pending（唯一能拿到 arguments 的时机）
+   │     ├── approval/request：始终 next() 委派给人/机 answerer；allowed-once → 签发 Lease + setSandboxMode 提升会话模式 + 记回滚点
+   │     └── tools/result：清理 pending + 记录结果（沙箱模式回滚与 Lease 回收在此协同）
    ├── LeaseManager（MemoryLeaseStore，接口抽象可换持久化）
    ├── CapabilityService（ctx.capabilities，Managed Extension 用）
    └── Broker（Lease 校验 → ctx.credentials.resolve → Provider → External API）
@@ -59,11 +70,17 @@ DSH Capability Guard（TS 插件，横切）
 15. 错误统一使用规格第 18 节错误码（`LEASE_REQUIRED` / `CAPABILITY_MISMATCH` / `CREDENTIAL_NOT_CONFIGURED` 等），禁止杂乱字符串。
 16. 每完成一个 Phase，先补齐规格要求的测试并全部通过，再进入下一 Phase；禁止为通过测试删除安全断言。
 17. V1 禁止顺手实现 Dashboard/Web UI（Phase 4 才做）；禁止在同一 Phase 大规模 Rename 仓库（项目名暂保 dsh-capsule，新模块内部命名用 Capability Guard / LeaseManager / Managed Extension）。
+18. **审批瀑布三条红线（2026-09-14 基线新增，违反即为严重越权）**：
+    (a) `approval/request` 处理器**只观察、绝不合成 outcome** —— 任何路径都必须 `await next()` 并原样返回其结果；Guard 以 prepend 排在最前，一旦提前 return 就会在零人工交互下批准一切并旁路人类答话器。由 `universal-gate.test.ts` 的 P0-3 用例与 `integration/cordis-pipeline.test.ts` 的真 cordis 用例守护。
+    (a2) **`approval/request` 上只允许注册这一个 prepend 监听器**（2026-09-14 真 cordis 实测：prepend 监听器互相遮蔽——后注册的 prepend 排最前，认领后不再调用 `next()`，先注册者收不到事件）。任何额外的 prepend 监听器都会把 Guard 挤出观察位置，造成"审批通过却静默不签发 Lease"。同时必须校验审批发起者 session 与上下文一致，不一致一律不接管。
+    (b) 提升授权**只能用 `setSandboxMode`**；**严禁** `permissionPresets.set` / `approval.setPolicy`（内置 `danger-full-access` preset 配 `approval: never`，调用即永久关闭审批）。回滚前必须做冲突检测：当前模式已非 Guard 写入值（用户手动改过）则**跳过回滚**并记审计，绝不冲掉用户选择。
+    (c) **禁止为子 session 签发 Lease** —— 子 agent 的 approval policy 被 DSH 钉死为 `never`，其授权请求在瀑布派发前就 fail-closed；跨 session 继承授权在设计上不可能，也不允许尝试。
 
 ## 6. 实现阶段顺序（重构规格第 24 节，禁止跳序或超前）
 
 1. **Phase 0**：冻结旧 Docker Runtime——旧 TS 文件（rpc-client / approval / credentials / tool-loader）移入 `adapter/src/legacy/`，默认启动不 spawn Python，旧测试保持可独立运行。
-2. **Phase 1**：Universal Short-lived Authorization——types / canonical / scope-resolver / policy / MemoryLeaseStore / LeaseManager / PendingExecution + `tools/pre-execute`、`approval/request`、`tools/result` 三个 hook + audit。
+2. **Phase 1**：Universal Short-lived Authorization——types / canonical / scope-resolver / escalation / policy / MemoryLeaseStore / LeaseManager / PendingExecution + **四个 hook**（`tools/pre-execute`、`tools/execute`、`approval/request`、`tools/result`）+ audit。
+   *（2026-09-14 基线修正：原为三个 hook。`tools/execute` 是沙箱升级链路上唯一能同时拿到 callId 与 arguments 的时机，属 Phase 1 基线的必要组成部分，不新开 Phase。）*
 3. **Phase 2**：Managed Capability Service（`ctx.capabilities` register / execute / 语义 Scope）。
 4. **Phase 3**：Credential Broker（ProviderRegistry + GitHubProvider + per-operation resolve + 双重校验）。
 5. **Phase 4**：Governance Console / Observability。
@@ -75,8 +92,10 @@ Phase 0–4 已全部完成；规格后续以"接入真实 DSH/Cordis API 联调
 
 ```text
 adapter/src/
-├── index.ts                 # Guard Plugin 入口（纯 TypeScript）
-├── capability/              # types / canonical / scope-resolver / policy / lease-store / lease-manager / pending / universal-gate
+├── index.ts                 # Guard Plugin 入口（纯 TypeScript）+ buildSandboxContext 宿主适配器
+├── capability/              # types / canonical / scope-resolver / escalation / policy / sandbox-grant / lease-store / lease-manager / pending / universal-gate
+├── integration/             # 真 @deepseek-ai/cordis 集成测试：cordis-pipeline（hook 接线与瀑布认领语义）
+│                            #   / plugin-activation（Context.plugin 装载）/ cordis-get-semantics（ctx.get 降级契约）
 ├── service/                 # capability-service.ts（ctx.capabilities）
 ├── broker/                  # errors / provider / registry / broker / providers/github.ts
 └── audit/                   # types / audit-service
@@ -92,7 +111,8 @@ extensions/github-demo/      # Managed Extension 示例
 
 ## 9. 测试与跨平台
 
-- 新 TS 测试位于 `adapter/src/capability/*.test.ts`，必须覆盖规格第 22 节 V1 清单（原 allow/deny 不受影响、deny 不可被 Lease 覆盖、Lease 复用、Session/Scope 隔离、TTL、revoke、并行 callId 隔离、取消清理、canonical JSON 哈希稳定）与第 23 节 V2 清单（15 项）。
+- 新 TS 测试位于 `adapter/src/capability/*.test.ts`（算法与负向路径）与 `adapter/src/integration/*.test.ts`（真 cordis 接线语义），必须覆盖规格第 22 节 V1 清单（原 allow/deny 不受影响、deny 不可被 Lease 覆盖、Lease 复用、Session/Scope 隔离、TTL、revoke、并行 callId 隔离、取消清理、canonical JSON 哈希稳定）与第 23 节 V2 清单（15 项）。
+- **改动 hook 注册、事件顺序或宿主服务访问方式时，必须同时更新 `adapter/src/integration/` 下的真 cordis 测试**——历史上三个最难查的缺陷（事件时序、prepend 遮蔽、服务必须 `ctx.get`）都只有这一层能发现，单元测试用的假 bus/假 ctx 会掩盖它们。
 - CI 必须在 ubuntu / windows / macos 三平台跑 build + test（纯 TS，无 Python/Docker job）。
 - 安全相关代码必须配负向测试（rejected / cancelled / unavailable 不签发、mismatch 拒绝、Secret 不入日志）。
 

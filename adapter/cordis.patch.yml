@@ -1,0 +1,25 @@
+# DSH Capability Guard bundle patch
+#
+# 本文件由 `@dsh-capsule/adapter` 的 package.json 通过 `dsh.bundle.patch` 声明；
+# 以 `dsh plugin --profile <name> add <此包>` 安装后，该包会作为一层 profile bundle 生效，
+# 本行随之被插入到 profile 组合中（后续 bundle 层与用户自己的 cordis.patch.yml 可按 id 覆盖它）。
+#
+# 行为说明（刻意保守）：
+#   - 未配置任何 rules 时，Guard 只注册四个观察型 hook，**不改变任何 DSH 行为**；
+#   - 只有用户在 profile 的 cordis.patch.yml 中为该行补上 config.rules，才会接管沙箱升级等链路。
+#
+# 按 id 覆盖示例（加到 profile 的 cordis.patch.yml）：
+#
+#   - id: capability-guard
+#     name: '@dsh-capsule/adapter'
+#     config:
+#       defaultTtlSeconds: 60
+#       maxTtlSeconds: 1800
+#       rules:
+#         - match: pwsh
+#           ttlSeconds: 300
+#           scope: { mode: sandbox-escalation }
+
+- insert:
+    - id: capability-guard
+      name: '@dsh-capsule/adapter'

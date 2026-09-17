@@ -1,4 +1,5 @@
 import { AuditService } from "./audit/audit-service.js";
+import { Context } from "@deepseek-ai/cordis";
 import { CredentialBroker, DEFAULT_BROKER_TIMEOUT_MS, findCredentialService, type BrokerDeps, type CredentialServiceLike } from "./broker/broker.js";
 import { GitHubProvider } from "./broker/providers/github.js";
 import { ProviderRegistry } from "./broker/registry.js";
@@ -8,14 +9,63 @@ import { MemoryLeaseStore } from "./capability/lease-store.js";
 import { PendingRegistry } from "./capability/pending.js";
 import { DEFAULT_UNIVERSAL_POLICY, PolicyResolver, type UniversalPolicyConfig } from "./capability/policy.js";
 import { ScopeResolver } from "./capability/scope-resolver.js";
+import { SandboxGrantManager, type SandboxContext } from "./capability/sandbox-grant.js";
+import type { SandboxMode } from "./capability/escalation.js";
 import { UniversalGate } from "./capability/universal-gate.js";
 import { GovernanceConsole } from "./console/console-service.js";
 import { startConsoleServer, type ConsoleHttpHandle } from "./console/http-server.js";
 import type { ConsoleHttpConfig } from "./console/types.js";
 import { CapabilityService } from "./service/capability-service.js";
+function createDetachedContext(): Context {
+  // 作用：为「宿主 ctx 不是 cordis Context」的场景创建一个游离 Context 承载 CapabilityService——
+  // 服务照常可用（例如 Console / 治理视图会读取它），但不会被注册进任何真实宿主上下文。
+  // 该退化只影响 Managed Extension 的依赖注入可见性，不影响 Universal Mode 主链路。
+  return new Context();
+}
 export type CapsuleHostContext = Record<string, unknown>;
 export type DisposeHook = () => void | Promise<void>;
-export { AuditService, CapabilityService, CredentialBroker, GitHubProvider, GovernanceConsole, LeaseManager, MemoryLeaseStore, PendingRegistry, PolicyResolver, ProviderRegistry, ScopeResolver, UniversalGate, startConsoleServer, DEFAULT_UNIVERSAL_POLICY, DEFAULT_BROKER_TIMEOUT_MS, findCredentialService, sha256Scope };
+// 作用：P0-2 宿主适配器——把 DSH 的会话沙箱模式读写能力收敛成 SandboxContext 最小接口。
+// 【cordis API 事实（2026-09-14 由插件装载测试发现）】服务必须用 `ctx.get(name)` 读取：
+//   inject 声明的是**硬依赖**，而未经 inject 的服务用属性访问（`ctx.sessionProjections`）会被
+//   cordis 代理直接抛 `cannot get property "…" without inject`。`ctx.get()` 在服务缺失时返回
+//   undefined，正是"缺失即降级"所需的语义，因此本适配器只依赖 `ctx.get` 与 `ctx.on` 两个方法。
+// 读取：ctx.get("sessionProjections").stateOf(session, "sandboxMode")
+// 写入：session.append("sandbox/mode", { mode })（与 dsh-sandbox-policy 的 setSandboxMode 同源）
+// 任一依赖缺失时：读返回保守默认 workspace-write，写静默忽略 → Guard 无法收紧或放宽沙箱，
+// 只会回到 DSH 原生审批语义（用户多被问一次，不会越权）。
+export function buildSandboxContext(ctx: CapsuleHostContext, fallbackMode: SandboxMode = "workspace-write"): SandboxContext {
+  const readMode = (session: unknown): SandboxMode => {
+    const projections = getService(ctx, "sessionProjections") as { stateOf?: unknown } | undefined;
+    if (!projections || typeof projections.stateOf !== "function") return fallbackMode;
+    try {
+      const state = (projections.stateOf as (session: unknown, key: string) => unknown)(session, "sandboxMode");
+      if (state === "read-only" || state === "workspace-write" || state === "danger-full-access") return state;
+    } catch {
+      // 投影读取异常：按缺失处理（保守默认），绝不猜测
+    }
+    return fallbackMode;
+  };
+  const writeMode = (session: unknown, mode: SandboxMode): void => {
+    const append = session && typeof session === "object" ? (session as { append?: unknown }).append : undefined;
+    if (typeof append !== "function") return;
+    const id = session && typeof session === "object" ? (session as { id?: unknown }).id : undefined;
+    if (typeof id !== "string" && typeof id !== "number") return;
+    (append as (type: string, data: { mode: SandboxMode }) => unknown).call(session, "sandbox/mode", { mode });
+  };
+  return { sessionSandboxMode: readMode, setSessionSandboxMode: writeMode };
+}
+function getService(ctx: CapsuleHostContext, name: string): unknown {
+  // 作用：按 cordis 的方式解析宿主服务——只走 `ctx.get(name)`（缺失返回 undefined，不抛错）。
+  // 刻意【不用】属性访问：未经 inject 的服务在 cordis 代理上访问属性会直接抛错。
+  const get = (ctx as { get?: unknown }).get;
+  if (typeof get !== "function") return undefined;
+  try {
+    return (get as (name: string) => unknown).call(ctx, name);
+  } catch {
+    return undefined;
+  }
+}
+export { AuditService, CapabilityService, CredentialBroker, GitHubProvider, GovernanceConsole, LeaseManager, MemoryLeaseStore, PendingRegistry, PolicyResolver, ProviderRegistry, SandboxGrantManager, ScopeResolver, UniversalGate, startConsoleServer, DEFAULT_UNIVERSAL_POLICY, DEFAULT_BROKER_TIMEOUT_MS, findCredentialService, sha256Scope };
 export type { UniversalPolicyConfig, CredentialServiceLike, BrokerDeps, ConsoleHttpConfig };
 // 作用：Guard 插件完整配置——策略项（Partial<UniversalPolicyConfig>）+ Phase 4 Governance Console
 // 本地只读查看器开关（默认关闭：仅提供编程 API，不监听任何端口）。
@@ -44,12 +94,27 @@ export async function apply(ctx: CapsuleHostContext, config?: GuardPluginConfig)
   const registry = new ProviderRegistry();
   registry.register(new GitHubProvider());
   const broker = new CredentialBroker({ registry, getCredentials: () => findCredentialService(ctx) });
-  const capabilities = new CapabilityService({
-    leases,
-    defaultTtlSeconds: policyConfig.defaultTtlSeconds,
-    maxTtlSeconds: policyConfig.maxTtlSeconds,
-    executor: broker,
-  });
+  // 作用：把 cordis 上下文交给 CapabilityService——它以 `super(ctx, "capabilities")` 自注册为服务，
+  // 随 fiber 卸载自动注销（基线修正，取代原先往 ctx 硬挂属性 + 手动 delete 的做法）。
+  // 真实 DSH 的 ctx 必然是 cordis Context；仅在非 cordis 宿主（如单元测试的最小 ctx）下退化为
+  // 不注册服务，此时 Managed Extension 因 `inject: ["capabilities"]` 不会激活（Fail Closed，不静默降级）。
+  let capabilities: CapabilityService;
+  try {
+    capabilities = new CapabilityService(ctx as unknown as Context, {
+      leases,
+      defaultTtlSeconds: policyConfig.defaultTtlSeconds,
+      maxTtlSeconds: policyConfig.maxTtlSeconds,
+      executor: broker,
+    });
+  } catch (err) {
+    process.stderr.write(`[dsh-guard] ctx.capabilities service registration unavailable: ${String(err)}\n`);
+    capabilities = new CapabilityService(createDetachedContext(), {
+      leases,
+      defaultTtlSeconds: policyConfig.defaultTtlSeconds,
+      maxTtlSeconds: policyConfig.maxTtlSeconds,
+      executor: broker,
+    });
+  }
   const audit = new AuditService();
   const gate = new UniversalGate({
     policy: new PolicyResolver(policyConfig),
@@ -58,15 +123,14 @@ export async function apply(ctx: CapsuleHostContext, config?: GuardPluginConfig)
     pending: new PendingRegistry(),
     audit,
     managed: capabilities,
+    // P0-2：沙箱模式有界授权。宿主服务缺失时该链路自动失效（Fail Closed：不提升 = 不越权），
+    // 其余 Universal Mode 行为完全不受影响
+    sandboxGrants: new SandboxGrantManager(buildSandboxContext(ctx), leases),
   });
   const govConsole = new GovernanceConsole({ audit, leases, capabilities, providers: registry, guardName: name });
   if (typeof (ctx as { on?: unknown }).on !== "function") {
     throw new Error("GUARD_INSTALL_FAILED: ctx.on unavailable");
   }
-  // TODO(规则 4/规格 10.1)：接入真实 DSH/Cordis 时改为 CapabilityService extends Cordis Service
-  //（super(ctx, 'capabilities')）并经 declare module '@deepseek-ai/cordis' 声明 Context 类型扩展；
-  // 当前以直接挂载属性方式提供 ctx.capabilities，dispose 时一并移除。
-  (ctx as { capabilities?: unknown }).capabilities = capabilities;
   const dispose = gate.install(ctx as unknown as Parameters<UniversalGate["install"]>[0]);
   let consoleHandle: ConsoleHttpHandle | undefined;
   if (config?.console?.enabled === true) {
@@ -77,6 +141,5 @@ export async function apply(ctx: CapsuleHostContext, config?: GuardPluginConfig)
       await consoleHandle.close();
     }
     dispose();
-    delete (ctx as { capabilities?: unknown }).capabilities;
   };
 }
